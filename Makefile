@@ -45,8 +45,8 @@ PODI_REPO = https://github.com/slaide/podi.git
 PODI_DIR = $(DEPSDIR)/podi
 PODI_LIB = $(PODI_DIR)/lib/libpodi$(shell if [ "$(UNAME_S)" = "Darwin" ]; then echo ".dylib"; else echo ".so"; fi)
 
-# Use local podi if available, otherwise clone
-LOCAL_PODI_DIR = /home/patrick/code/podi
+# To use a local podi directory for development, set PODI_LOCAL_DIR:
+# make PODI_LOCAL_DIR=/path/to/local/podi
 
 SOURCES = $(wildcard $(SRCDIR)/*.c)
 OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
@@ -64,10 +64,10 @@ podi: $(PODI_LIB)
 
 $(PODI_LIB):
 	@echo "Setting up podi dependency..."
-	@if [ -d "$(LOCAL_PODI_DIR)" ]; then \
-		echo "Using local podi directory..."; \
+	@if [ -n "$(PODI_LOCAL_DIR)" ] && [ -d "$(PODI_LOCAL_DIR)" ]; then \
+		echo "Using local podi directory: $(PODI_LOCAL_DIR)"; \
 		mkdir -p $(DEPSDIR) && \
-		ln -sf $(LOCAL_PODI_DIR) $(PODI_DIR); \
+		ln -sf $(PODI_LOCAL_DIR) $(PODI_DIR); \
 	elif [ ! -d "$(PODI_DIR)" ]; then \
 		echo "Cloning podi from remote..."; \
 		mkdir -p $(DEPSDIR) && \
