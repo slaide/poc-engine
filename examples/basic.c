@@ -40,12 +40,11 @@ int my_main(podi_application *app) {
     }
 
     printf("POC Engine basic example running...\n");
-    printf("Running for 4 seconds at 30fps, or press ESC to exit\n");
+    printf("Running at 30fps, press ESC to exit\n");
     printf("Event logging enabled - all inputs will be shown\n\n");
 
     const double target_fps = 30.0;
     const double frame_time = 1.0 / target_fps;
-    const double max_runtime = 4.0; // 4 seconds
 
     struct timespec start_time, current_time, last_frame_time;
     clock_gettime(CLOCK_MONOTONIC, &start_time);
@@ -55,15 +54,7 @@ int my_main(podi_application *app) {
     int frame_count = 0;
 
     while (!podi_application_should_close(app) && !podi_window_should_close(window)) {
-        // Check if 4 seconds have elapsed
         clock_gettime(CLOCK_MONOTONIC, &current_time);
-        double elapsed = (current_time.tv_sec - start_time.tv_sec) +
-                        (current_time.tv_nsec - start_time.tv_nsec) / 1e9;
-
-        if (elapsed >= max_runtime) {
-            printf("Auto-exiting after %.1f seconds (%d frames)\n", elapsed, frame_count);
-            break;
-        }
         podi_event event;
         while (podi_application_poll_event(app, &event)) {
             switch (event.type) {
