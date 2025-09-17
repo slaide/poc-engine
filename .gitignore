@@ -1,0 +1,27 @@
+# Build artifacts
+obj/
+*.o
+*.so
+*.dylib
+*.a
+
+# Example binaries
+examples/basic
+
+# Dependencies
+deps/
+
+# Debug files
+*.dSYM/
+*.gdb_history
+
+# Platform specific
+.DS_Store
+Thumbs.db
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

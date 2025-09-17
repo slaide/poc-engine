@@ -1,0 +1,106 @@
+CC = gcc
+CFLAGS = -std=c23 -Wall -Wextra -Werror -Iinclude -Ideps/podi/include
+LDFLAGS =
+
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+
+ifeq ($(UNAME_M),x86_64)
+    ARCH = x64
+else ifeq ($(UNAME_M),aarch64)
+    ARCH = arm64
+else ifeq ($(UNAME_M),arm64)
+    ARCH = arm64
+else
+    $(error Unsupported architecture: $(UNAME_M))
+endif
+
+ifeq ($(UNAME_S),Linux)
+    PLATFORM_LIBS = -lX11 -lwayland-client -lxkbcommon -lvulkan -ldl -lm
+    CFLAGS += -DPOC_PLATFORM_LINUX
+    ifeq ($(ARCH),x64)
+        CFLAGS += -DPOC_ARCH_X64
+    else ifeq ($(ARCH),arm64)
+        CFLAGS += -DPOC_ARCH_ARM64
+    endif
+else ifeq ($(UNAME_S),Darwin)
+    PLATFORM_LIBS = -framework Cocoa -framework Metal -framework MetalKit
+    CFLAGS += -fobjc-arc -DPOC_PLATFORM_MACOS
+    ifeq ($(ARCH),arm64)
+        CFLAGS += -DPOC_ARCH_ARM64 -arch arm64
+        LDFLAGS += -arch arm64
+    else
+        $(error macOS x64 not supported - only arm64 macOS is supported)
+    endif
+else
+    $(error Unsupported platform: $(UNAME_S))
+endif
+
+SRCDIR = src
+OBJDIR = obj
+EXAMPLEDIR = examples
+DEPSDIR = deps
+
+PODI_REPO = https://github.com/slaide/podi.git
+PODI_DIR = $(DEPSDIR)/podi
+PODI_LIB = $(PODI_DIR)/lib/libpodi$(shell if [ "$(UNAME_S)" = "Darwin" ]; then echo ".dylib"; else echo ".so"; fi)
+
+# Use local podi if available, otherwise clone
+LOCAL_PODI_DIR = /home/patrick/code/podi
+
+SOURCES = $(wildcard $(SRCDIR)/*.c)
+OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
+
+EXAMPLE_SOURCES = $(wildcard $(EXAMPLEDIR)/*.c)
+EXAMPLE_TARGETS = $(EXAMPLE_SOURCES:$(EXAMPLEDIR)/%.c=$(EXAMPLEDIR)/%)
+
+.PHONY: all clean examples podi deps run
+
+all: deps examples
+
+deps: podi
+
+podi: $(PODI_LIB)
+
+$(PODI_LIB):
+	@echo "Setting up podi dependency..."
+	@if [ -d "$(LOCAL_PODI_DIR)" ]; then \
+		echo "Using local podi directory..."; \
+		mkdir -p $(DEPSDIR) && \
+		ln -sf $(LOCAL_PODI_DIR) $(PODI_DIR); \
+	elif [ ! -d "$(PODI_DIR)" ]; then \
+		echo "Cloning podi from remote..."; \
+		mkdir -p $(DEPSDIR) && \
+		git clone $(PODI_REPO) $(PODI_DIR); \
+	fi
+	@cd $(PODI_DIR) && $(MAKE)
+
+examples: $(EXAMPLE_TARGETS)
+
+$(EXAMPLEDIR)/%: $(EXAMPLEDIR)/%.c $(OBJECTS) $(PODI_LIB) | $(OBJDIR)
+	$(CC) $(CFLAGS) $< $(OBJECTS) -L$(PODI_DIR)/lib -lpodi $(PLATFORM_LIBS) -o $@
+
+$(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJDIR):
+	mkdir -p $(OBJDIR)
+
+clean:
+	rm -rf $(OBJDIR)
+	rm -f $(EXAMPLE_TARGETS)
+
+clean-all: clean
+	rm -rf $(DEPSDIR)
+
+debug: CFLAGS += -g -DDEBUG
+debug: all
+
+release: CFLAGS += -O3 -DNDEBUG
+release: all
+
+run: examples/basic
+	@echo "Running POC Engine basic example..."
+	@LD_LIBRARY_PATH=$(PODI_DIR)/lib:$$LD_LIBRARY_PATH ./examples/basic
+
+.SECONDARY: $(OBJECTS)
