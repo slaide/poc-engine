@@ -49,6 +49,9 @@ void poc_context_clear_color(poc_context *ctx, float r, float g, float b, float 
 
 const char *poc_result_to_string(poc_result result);
 
+double poc_get_time(void);
+void poc_sleep(double seconds);
+
 #ifdef __cplusplus
 }
 #endif

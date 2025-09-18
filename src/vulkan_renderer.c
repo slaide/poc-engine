@@ -870,7 +870,7 @@ static VkExtent2D choose_swap_extent(const VkSurfaceCapabilitiesKHR *capabilitie
         return capabilities->currentExtent;
     } else {
         int width, height;
-        podi_window_get_size(window, &width, &height);
+        podi_window_get_framebuffer_size(window, &width, &height);
 
         VkExtent2D actual_extent = {
             (uint32_t)width,

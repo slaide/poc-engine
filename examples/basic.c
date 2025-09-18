@@ -1,9 +1,8 @@
-#define _POSIX_C_SOURCE 199309L
-#include "poc_engine.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include <time.h>
+
+#include "poc_engine.h"
 
 int my_main(podi_application *app) {
     poc_config config = (poc_config){
@@ -24,7 +23,17 @@ int my_main(podi_application *app) {
         return -1;
     }
 
-    podi_window *window = podi_window_create(app, "POC Engine - Basic Example", 800, 600);
+    // Get display scale factor for logical sizing
+    float scale_factor = podi_get_display_scale_factor(app);
+    printf("Display scale factor: %.1f\n", scale_factor);
+
+    // Create window at logical size (800x600 that appears consistent across displays)
+    // Scale the requested size by the display scale factor for logical sizing
+    int logical_width = 800, logical_height = 600;
+    int physical_width = (int)(logical_width * scale_factor);
+    int physical_height = (int)(logical_height * scale_factor);
+
+    podi_window *window = podi_window_create(app, "POC Engine - Basic Example", physical_width, physical_height);
     if (!window) {
         printf("Failed to create window\n");
         poc_shutdown();
@@ -41,20 +50,30 @@ int my_main(podi_application *app) {
 
     printf("POC Engine basic example running...\n");
     printf("Running at 30fps, press ESC to exit\n");
-    printf("Event logging enabled - all inputs will be shown\n\n");
+    printf("Event logging enabled - all inputs will be shown\n");
+
+    // Print window and scaling information
+    int actual_width, actual_height;
+    int framebuffer_width, framebuffer_height;
+    float window_scale_factor = podi_window_get_scale_factor(window);
+    podi_window_get_size(window, &actual_width, &actual_height);
+    podi_window_get_framebuffer_size(window, &framebuffer_width, &framebuffer_height);
+
+    printf("Logical size: %dx%d\n\n", logical_width, logical_height);
+    printf("Window scale factor: %.1f\n", window_scale_factor);
+    printf("Physical window size: %dx%d\n", actual_width, actual_height);
+    printf("Framebuffer size: %dx%d\n", framebuffer_width, framebuffer_height);
 
     const double target_fps = 30.0;
-    const double frame_time = 1.0 / target_fps;
+    /* target frame time based on target fps */
+    const double target_frame_time = 1.0 / target_fps;
 
-    struct timespec start_time, current_time, last_frame_time;
-    clock_gettime(CLOCK_MONOTONIC, &start_time);
-    last_frame_time = start_time;
-
+    double last_frame_time = poc_get_time();
     float color_time = 0.0f;
     int frame_count = 0;
 
     while (!podi_application_should_close(app) && !podi_window_should_close(window)) {
-        clock_gettime(CLOCK_MONOTONIC, &current_time);
+        double current_time = poc_get_time();
         podi_event event;
         while (podi_application_poll_event(app, &event)) {
             switch (event.type) {
@@ -128,38 +147,33 @@ int my_main(podi_application *app) {
         }
 
         // Frame rate control
-        double frame_elapsed = (current_time.tv_sec - last_frame_time.tv_sec) +
-                              (current_time.tv_nsec - last_frame_time.tv_nsec) / 1e9;
+        double frame_elapsed = current_time - last_frame_time;
 
-        if (frame_elapsed >= frame_time) {
-            color_time += (float)frame_elapsed;
-            float r = (sinf(color_time) + 1.0f) * 0.5f;
-            float g = (sinf(color_time + 2.0f) + 1.0f) * 0.5f;
-            float b = (sinf(color_time + 4.0f) + 1.0f) * 0.5f;
+        double remaining_frame_time=target_frame_time - frame_elapsed;
+        if (remaining_frame_time>0) {
+            poc_sleep(remaining_frame_time);
+        }
 
-            result = poc_context_begin_frame(ctx);
-            if (result == POC_RESULT_SUCCESS) {
-                poc_context_clear_color(ctx, r, g, b, 1.0f);
-                result = poc_context_end_frame(ctx);
-                if (result != POC_RESULT_SUCCESS) {
-                    printf("Failed to end frame: %s\n", poc_result_to_string(result));
-                    break;
-                }
-            } else {
-                printf("Failed to begin frame: %s\n", poc_result_to_string(result));
+        color_time += (float)target_frame_time;
+        float r = (sinf(color_time) + 1.0f) * 0.5f;
+        float g = (sinf(color_time + 2.0f) + 1.0f) * 0.5f;
+        float b = (sinf(color_time + 4.0f) + 1.0f) * 0.5f;
+
+        result = poc_context_begin_frame(ctx);
+        if (result == POC_RESULT_SUCCESS) {
+            poc_context_clear_color(ctx, r, g, b, 1.0f);
+            result = poc_context_end_frame(ctx);
+            if (result != POC_RESULT_SUCCESS) {
+                printf("Failed to end frame: %s\n", poc_result_to_string(result));
                 break;
             }
-
-            last_frame_time = current_time;
-            frame_count++;
         } else {
-            // Sleep for a short time to avoid busy waiting
-            struct timespec sleep_time = {
-                .tv_sec = 0,
-                .tv_nsec = 1000000 // 1ms
-            };
-            nanosleep(&sleep_time, NULL);
+            printf("Failed to begin frame: %s\n", poc_result_to_string(result));
+            break;
         }
+
+        last_frame_time = current_time;
+        frame_count++;
     }
 
     poc_context_destroy(ctx);

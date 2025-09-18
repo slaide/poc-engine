@@ -1,7 +1,9 @@
+#define _POSIX_C_SOURCE 199309L
 #include "poc_engine.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef POC_PLATFORM_LINUX
 #include "vulkan_renderer.h"
@@ -13,6 +15,7 @@
 
 static poc_renderer_type g_current_renderer = POC_RENDERER_VULKAN;
 static bool g_initialized = false;
+static struct timespec g_start_time = {0};
 
 poc_result poc_init(const poc_config *config) {
     if (g_initialized) {
@@ -54,6 +57,9 @@ poc_result poc_init(const poc_config *config) {
         return POC_RESULT_ERROR_INIT_FAILED;
     }
 #endif
+
+    // Initialize the application start time
+    clock_gettime(CLOCK_MONOTONIC, &g_start_time);
 
     g_initialized = true;
     printf("POC Engine initialized with %s renderer\n",
@@ -202,4 +208,32 @@ const char *poc_result_to_string(poc_result result) {
         case POC_RESULT_ERROR_PIPELINE_CREATION_FAILED: return "Pipeline creation failed";
         default: return "Unknown error";
     }
+}
+
+double poc_get_time(void) {
+    if (!g_initialized) {
+        return 0.0;
+    }
+
+    struct timespec current_time;
+    clock_gettime(CLOCK_MONOTONIC, &current_time);
+
+    // Calculate elapsed time since application start
+    double elapsed_seconds = (double)(current_time.tv_sec - g_start_time.tv_sec);
+    elapsed_seconds += (double)(current_time.tv_nsec - g_start_time.tv_nsec) / 1000000000.0;
+
+    return elapsed_seconds;
+}
+
+void poc_sleep(double seconds) {
+    if (seconds <= 0.0) {
+        return;
+    }
+
+    struct timespec sleep_time = {
+        .tv_sec = (time_t)seconds,
+        .tv_nsec = (long)((seconds - (time_t)seconds) * 1000000000.0)
+    };
+
+    nanosleep(&sleep_time, NULL);
 }
