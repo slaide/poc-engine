@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <math.h>
 
 #include "poc_engine.h"
@@ -48,9 +49,12 @@ int my_main(podi_application *app) {
         return -1;
     }
 
+    const double target_fps = 120.0;
+
     printf("POC Engine basic example running...\n");
-    printf("Running at 30fps, press ESC to exit\n");
+    printf("Running at %.0ffps, press ESC to exit\n", target_fps);
     printf("Event logging enabled - all inputs will be shown\n");
+    printf("Press R/T/L to test interactive resize (bottom-right/top/left)\n");
 
     // Print window and scaling information
     int actual_width, actual_height;
@@ -63,8 +67,6 @@ int my_main(podi_application *app) {
     printf("Window scale factor: %.1f\n", window_scale_factor);
     printf("Physical window size: %dx%d\n", actual_width, actual_height);
     printf("Framebuffer size: %dx%d\n", framebuffer_width, framebuffer_height);
-
-    const double target_fps = 30.0;
     /* target frame time based on target fps */
     const double target_frame_time = 1.0 / target_fps;
 
@@ -72,8 +74,16 @@ int my_main(podi_application *app) {
     float color_time = 0.0f;
     int frame_count = 0;
 
+    // Resize coalescing: track current window size
+    int last_width = framebuffer_width, last_height = framebuffer_height;
+
     while (!podi_application_should_close(app) && !podi_window_should_close(window)) {
         double current_time = poc_get_time();
+
+        bool resize_pending = false;
+        int resize_width = last_width;
+        int resize_height = last_height;
+
         podi_event event;
         while (podi_application_poll_event(app, &event)) {
             switch (event.type) {
@@ -89,6 +99,12 @@ int my_main(podi_application *app) {
                            event.key.text ? event.key.text : "none");
                     if (event.key.key == PODI_KEY_ESCAPE) {
                         podi_window_close(window);
+                    } else if (event.key.key == PODI_KEY_R) {
+                        podi_window_begin_interactive_resize(window, PODI_RESIZE_EDGE_BOTTOM_RIGHT);
+                    } else if (event.key.key == PODI_KEY_T) {
+                        podi_window_begin_interactive_resize(window, PODI_RESIZE_EDGE_TOP);
+                    } else if (event.key.key == PODI_KEY_L) {
+                        podi_window_begin_interactive_resize(window, PODI_RESIZE_EDGE_LEFT);
                     }
                     break;
 
@@ -121,7 +137,9 @@ int my_main(podi_application *app) {
                     break;
 
                 case PODI_EVENT_WINDOW_RESIZE:
-                    printf("WINDOW_RESIZE: %dx%d\n", event.window_resize.width, event.window_resize.height);
+                    resize_pending = true;
+                    resize_width = event.window_resize.width;
+                    resize_height = event.window_resize.height;
                     break;
 
                 case PODI_EVENT_WINDOW_FOCUS:
@@ -144,6 +162,12 @@ int my_main(podi_application *app) {
                     printf("UNKNOWN_EVENT: type=%d\n", event.type);
                     break;
             }
+        }
+
+        if (resize_pending) {
+            printf("WINDOW_RESIZE: %dx%d\n", resize_width, resize_height);
+            last_width = resize_width;
+            last_height = resize_height;
         }
 
         // Frame rate control

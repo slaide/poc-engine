@@ -90,6 +90,11 @@ struct poc_context {
     uint32_t current_acquire_semaphore_index;  // Track which semaphore was used for acquisition
     float clear_color[4];
     podi_window *window;
+
+    // Resize handling
+    bool needs_swapchain_recreation;
+    uint32_t last_known_width;
+    uint32_t last_known_height;
 };
 
 static vulkan_state g_vk_state = {0};
@@ -891,7 +896,7 @@ static VkExtent2D choose_swap_extent(const VkSurfaceCapabilitiesKHR *capabilitie
     }
 }
 
-static poc_result create_swapchain(poc_context *ctx) {
+static poc_result create_swapchain_internal(poc_context *ctx, VkSwapchainKHR old_swapchain) {
     swapchain_support_details swapchain_support = query_swapchain_support(g_vk_state.physical_device, ctx->surface);
 
     VkSurfaceFormatKHR surface_format = choose_swap_surface_format(swapchain_support.formats, swapchain_support.format_count);
@@ -928,7 +933,7 @@ static poc_result create_swapchain(poc_context *ctx) {
     create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     create_info.presentMode = present_mode;
     create_info.clipped = VK_TRUE;
-    create_info.oldSwapchain = VK_NULL_HANDLE;
+    create_info.oldSwapchain = old_swapchain;
 
     VK_CHECK(vkCreateSwapchainKHR(g_vk_state.device, &create_info, NULL, &ctx->swapchain));
 
@@ -972,6 +977,51 @@ static poc_result create_swapchain(poc_context *ctx) {
     printf("  Present mode: %d\n", present_mode);
 
     return POC_RESULT_SUCCESS;
+}
+
+static poc_result create_swapchain(poc_context *ctx) {
+    return create_swapchain_internal(ctx, VK_NULL_HANDLE);
+}
+
+static void cleanup_swapchain_images(poc_context *ctx) {
+    if (ctx->swapchain_image_views) {
+        for (uint32_t i = 0; i < ctx->swapchain_image_count; i++) {
+            if (ctx->swapchain_image_views[i] != VK_NULL_HANDLE) {
+                vkDestroyImageView(g_vk_state.device, ctx->swapchain_image_views[i], NULL);
+            }
+        }
+        free(ctx->swapchain_image_views);
+        ctx->swapchain_image_views = NULL;
+    }
+
+    if (ctx->swapchain_images) {
+        free(ctx->swapchain_images);
+        ctx->swapchain_images = NULL;
+    }
+
+    ctx->swapchain_image_count = 0;
+}
+
+static poc_result recreate_swapchain(poc_context *ctx) {
+    printf("Recreating swapchain...\n");
+
+    // Wait for device to be idle
+    vkDeviceWaitIdle(g_vk_state.device);
+
+    // Clean up old swapchain resources
+    cleanup_swapchain_images(ctx);
+
+    VkSwapchainKHR old_swapchain = ctx->swapchain;
+
+    // Create new swapchain
+    poc_result result = create_swapchain_internal(ctx, old_swapchain);
+
+    // Destroy old swapchain after creating new one
+    if (old_swapchain != VK_NULL_HANDLE) {
+        vkDestroySwapchainKHR(g_vk_state.device, old_swapchain, NULL);
+    }
+
+    return result;
 }
 
 static poc_result create_command_pool(poc_context *ctx) {
@@ -1079,6 +1129,13 @@ poc_context *vulkan_context_create(podi_window *window) {
     ctx->surface = surface;
     ctx->window = window;
 
+    // Initialize resize tracking
+    int initial_width, initial_height;
+    podi_window_get_framebuffer_size(window, &initial_width, &initial_height);
+    ctx->last_known_width = (uint32_t)initial_width;
+    ctx->last_known_height = (uint32_t)initial_height;
+    ctx->needs_swapchain_recreation = false;
+
     // Set default clear color to pink
     ctx->clear_color[0] = 1.0f;  // Red
     ctx->clear_color[1] = 0.4f;  // Green
@@ -1173,22 +1230,8 @@ void vulkan_context_destroy(poc_context *ctx) {
         free(ctx->command_buffers);
     }
 
-    // Destroy image views
-    if (ctx->swapchain_image_views) {
-        for (uint32_t i = 0; i < ctx->swapchain_image_count; i++) {
-            if (ctx->swapchain_image_views[i] != VK_NULL_HANDLE) {
-                vkDestroyImageView(g_vk_state.device, ctx->swapchain_image_views[i], NULL);
-            }
-        }
-        free(ctx->swapchain_image_views);
-    }
-
-    // Free swapchain images array
-    if (ctx->swapchain_images) {
-        free(ctx->swapchain_images);
-    }
-
     // Destroy swapchain
+    cleanup_swapchain_images(ctx);
     if (ctx->swapchain != VK_NULL_HANDLE) {
         vkDestroySwapchainKHR(g_vk_state.device, ctx->swapchain, NULL);
     }
@@ -1207,6 +1250,32 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
         return POC_RESULT_ERROR_INIT_FAILED;
     }
 
+    // Check if window size has changed
+    int current_width, current_height;
+    podi_window_get_framebuffer_size(ctx->window, &current_width, &current_height);
+
+    // Track size changes but only recreate when we're about to render
+    if ((uint32_t)current_width != ctx->last_known_width ||
+        (uint32_t)current_height != ctx->last_known_height) {
+        ctx->needs_swapchain_recreation = true;
+        ctx->last_known_width = (uint32_t)current_width;
+        ctx->last_known_height = (uint32_t)current_height;
+    }
+
+    // Only recreate if we actually need to and the size is stable
+    if (ctx->needs_swapchain_recreation &&
+        ((uint32_t)current_width != ctx->swapchain_extent.width ||
+         (uint32_t)current_height != ctx->swapchain_extent.height)) {
+        printf("Window size changed from %ux%u to %ux%u - recreating swapchain\n",
+               ctx->swapchain_extent.width, ctx->swapchain_extent.height,
+               current_width, current_height);
+        poc_result recreate_result = recreate_swapchain(ctx);
+        if (recreate_result != POC_RESULT_SUCCESS) {
+            return recreate_result;
+        }
+        ctx->needs_swapchain_recreation = false;
+    }
+
     // Wait for previous frame to finish
     vkWaitForFences(g_vk_state.device, 1, &ctx->in_flight_fences[ctx->current_frame], VK_TRUE, UINT64_MAX);
     vkResetFences(g_vk_state.device, 1, &ctx->in_flight_fences[ctx->current_frame]);
@@ -1220,7 +1289,17 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
     VkResult result = vkAcquireNextImageKHR(g_vk_state.device, ctx->swapchain, UINT64_MAX,
                                             ctx->image_available_semaphores[acquire_semaphore_index], VK_NULL_HANDLE, &image_index);
 
-    if (result != VK_SUCCESS) {
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        poc_result recreate_result = recreate_swapchain(ctx);
+        if (recreate_result != POC_RESULT_SUCCESS) {
+            return recreate_result;
+        }
+        // Try acquiring again with new swapchain
+        result = vkAcquireNextImageKHR(g_vk_state.device, ctx->swapchain, UINT64_MAX,
+                                      ctx->image_available_semaphores[acquire_semaphore_index], VK_NULL_HANDLE, &image_index);
+    }
+
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
         printf("Failed to acquire swapchain image: %d\n", result);
         return POC_RESULT_ERROR_INIT_FAILED;
     }
@@ -1341,7 +1420,12 @@ poc_result vulkan_context_end_frame(poc_context *ctx) {
     present_info.pResults = NULL;
 
     VkResult result = vkQueuePresentKHR(g_vk_state.present_queue, &present_info);
-    if (result != VK_SUCCESS) {
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+        poc_result recreate_result = recreate_swapchain(ctx);
+        if (recreate_result != POC_RESULT_SUCCESS) {
+            return recreate_result;
+        }
+    } else if (result != VK_SUCCESS) {
         printf("Failed to present swapchain image: %d\n", result);
         return POC_RESULT_ERROR_INIT_FAILED;
     }
