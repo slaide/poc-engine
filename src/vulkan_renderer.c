@@ -112,6 +112,28 @@ static const char *validation_layers[] = {
     "VK_LAYER_KHRONOS_validation"
 };
 
+static const char *get_format_string(VkFormat format) {
+    switch (format) {
+        case VK_FORMAT_B8G8R8A8_SRGB: return "VK_FORMAT_B8G8R8A8_SRGB";
+        case VK_FORMAT_B8G8R8A8_UNORM: return "VK_FORMAT_B8G8R8A8_UNORM";
+        case VK_FORMAT_R8G8B8A8_SRGB: return "VK_FORMAT_R8G8B8A8_SRGB";
+        case VK_FORMAT_R8G8B8A8_UNORM: return "VK_FORMAT_R8G8B8A8_UNORM";
+        case VK_FORMAT_A2R10G10B10_UNORM_PACK32: return "VK_FORMAT_A2R10G10B10_UNORM_PACK32";
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return "VK_FORMAT_A2B10G10R10_UNORM_PACK32";
+        case VK_FORMAT_R16G16B16A16_SFLOAT: return "VK_FORMAT_R16G16B16A16_SFLOAT";
+        default: return "UNKNOWN_FORMAT";
+    }
+}
+
+static const char *get_present_mode_string(VkPresentModeKHR present_mode) {
+    switch (present_mode) {
+        case VK_PRESENT_MODE_IMMEDIATE_KHR: return "VK_PRESENT_MODE_IMMEDIATE_KHR";
+        case VK_PRESENT_MODE_MAILBOX_KHR: return "VK_PRESENT_MODE_MAILBOX_KHR";
+        case VK_PRESENT_MODE_FIFO_KHR: return "VK_PRESENT_MODE_FIFO_KHR";
+        case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "VK_PRESENT_MODE_FIFO_RELAXED_KHR";
+        default: return "UNKNOWN_PRESENT_MODE";
+    }
+}
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
@@ -980,10 +1002,10 @@ static poc_result create_swapchain_internal(poc_context *ctx, VkSwapchainKHR old
     cleanup_swapchain_support_details(&swapchain_support);
 
     printf("✓ Swapchain created\n");
-    printf("  Format: %d\n", ctx->swapchain_format);
+    printf("  Format: %s (%d)\n", get_format_string(ctx->swapchain_format), ctx->swapchain_format);
     printf("  Extent: %ux%u\n", ctx->swapchain_extent.width, ctx->swapchain_extent.height);
     printf("  Image count: %u\n", ctx->swapchain_image_count);
-    printf("  Present mode: %d\n", present_mode);
+    printf("  Present mode: %s (%d)\n", get_present_mode_string(present_mode), present_mode);
 
     return POC_RESULT_SUCCESS;
 }
@@ -1298,26 +1320,23 @@ static poc_result create_graphics_pipeline(poc_context *ctx) {
         .primitiveRestartEnable = VK_FALSE
     };
 
-    VkViewport viewport = {
-        .x = 0.0f,
-        .y = 0.0f,
-        .width = (float)ctx->swapchain_extent.width,
-        .height = (float)ctx->swapchain_extent.height,
-        .minDepth = 0.0f,
-        .maxDepth = 1.0f
-    };
-
-    VkRect2D scissor = {
-        .offset = {0, 0},
-        .extent = ctx->swapchain_extent
-    };
-
     VkPipelineViewportStateCreateInfo viewport_state = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
         .viewportCount = 1,
-        .pViewports = &viewport,
+        .pViewports = NULL,  // Will be set dynamically
         .scissorCount = 1,
-        .pScissors = &scissor
+        .pScissors = NULL    // Will be set dynamically
+    };
+
+    VkDynamicState dynamic_states[] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+
+    VkPipelineDynamicStateCreateInfo dynamic_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2,
+        .pDynamicStates = dynamic_states
     };
 
     VkPipelineRasterizationStateCreateInfo rasterizer = {
@@ -1375,7 +1394,7 @@ static poc_result create_graphics_pipeline(poc_context *ctx) {
         .pMultisampleState = &multisampling,
         .pDepthStencilState = NULL,
         .pColorBlendState = &color_blending,
-        .pDynamicState = NULL,
+        .pDynamicState = &dynamic_state,
         .layout = ctx->pipeline_layout,
         .renderPass = ctx->render_pass,
         .subpass = 0,
@@ -1688,6 +1707,24 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
 
     // Bind graphics pipeline
     vkCmdBindPipeline(ctx->command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS, ctx->graphics_pipeline);
+
+    // Set dynamic viewport
+    VkViewport viewport = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = (float)ctx->swapchain_extent.width,
+        .height = (float)ctx->swapchain_extent.height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f
+    };
+    vkCmdSetViewport(ctx->command_buffers[image_index], 0, 1, &viewport);
+
+    // Set dynamic scissor
+    VkRect2D scissor = {
+        .offset = {0, 0},
+        .extent = ctx->swapchain_extent
+    };
+    vkCmdSetScissor(ctx->command_buffers[image_index], 0, 1, &scissor);
 
     // Draw triangle (3 vertices, 1 instance, no vertex buffers needed as vertices are hardcoded in shader)
     vkCmdDraw(ctx->command_buffers[image_index], 3, 1, 0, 0);
