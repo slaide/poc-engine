@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+#include <cglm/cglm.h>
 
 // Forward declare X11 types to avoid including X11 headers
 typedef struct _Display Display;
@@ -34,6 +36,13 @@ bool podi_window_get_wayland_handles(podi_window *window, podi_wayland_handles *
 // Include Vulkan platform-specific headers after X11 types are defined
 #include <vulkan/vulkan_xlib.h>
 #include <vulkan/vulkan_wayland.h>
+
+// Uniform buffer object structure matching the shader
+typedef struct {
+    mat4 model;
+    mat4 view;
+    mat4 proj;
+} UniformBufferObject;
 
 #define VK_CHECK(result) \
     do { \
@@ -98,12 +107,23 @@ struct poc_context {
 
     // Rendering pipeline
     VkRenderPass render_pass;
+    VkDescriptorSetLayout descriptor_set_layout;
     VkPipelineLayout pipeline_layout;
     VkPipeline graphics_pipeline;
     VkFramebuffer *framebuffers;
     uint32_t framebuffer_count;  // Track framebuffer count independently from swapchain
     VkShaderModule vert_shader_module;
     VkShaderModule frag_shader_module;
+
+    // Uniform buffers
+    VkBuffer *uniform_buffers;
+    VkDeviceMemory *uniform_buffers_memory;
+    void **uniform_buffers_mapped;
+    VkDescriptorPool descriptor_pool;
+    VkDescriptorSet *descriptor_sets;
+
+    // Camera/transformation data
+    float camera_rotation_y;
 };
 
 static vulkan_state g_vk_state = {0};
@@ -1282,8 +1302,8 @@ static poc_result create_render_pass(poc_context *ctx) {
 
 static poc_result create_graphics_pipeline(poc_context *ctx) {
     // Load shaders
-    ctx->vert_shader_module = create_shader_module("shaders/triangle.vert.spv");
-    ctx->frag_shader_module = create_shader_module("shaders/triangle.frag.spv");
+    ctx->vert_shader_module = create_shader_module("shaders/cube.vert.spv");
+    ctx->frag_shader_module = create_shader_module("shaders/cube.frag.spv");
 
     if (ctx->vert_shader_module == VK_NULL_HANDLE || ctx->frag_shader_module == VK_NULL_HANDLE) {
         printf("Failed to load shader modules\n");
@@ -1373,10 +1393,27 @@ static poc_result create_graphics_pipeline(poc_context *ctx) {
         .blendConstants[3] = 0.0f
     };
 
+    // Create descriptor set layout for uniform buffer
+    VkDescriptorSetLayoutBinding ubo_layout_binding = {
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .pImmutableSamplers = NULL
+    };
+
+    VkDescriptorSetLayoutCreateInfo layout_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = &ubo_layout_binding
+    };
+
+    VK_CHECK(vkCreateDescriptorSetLayout(g_vk_state.device, &layout_info, NULL, &ctx->descriptor_set_layout));
+
     VkPipelineLayoutCreateInfo pipeline_layout_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 0,
-        .pSetLayouts = NULL,
+        .setLayoutCount = 1,
+        .pSetLayouts = &ctx->descriptor_set_layout,
         .pushConstantRangeCount = 0,
         .pPushConstantRanges = NULL
     };
@@ -1405,6 +1442,135 @@ static poc_result create_graphics_pipeline(poc_context *ctx) {
     VK_CHECK(vkCreateGraphicsPipelines(g_vk_state.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &ctx->graphics_pipeline));
 
     printf("✓ Graphics pipeline created\n");
+    return POC_RESULT_SUCCESS;
+}
+
+static uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties) {
+    VkPhysicalDeviceMemoryProperties mem_properties;
+    vkGetPhysicalDeviceMemoryProperties(g_vk_state.physical_device, &mem_properties);
+
+    for (uint32_t i = 0; i < mem_properties.memoryTypeCount; i++) {
+        if ((type_filter & (1 << i)) &&
+            (mem_properties.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i;
+        }
+    }
+
+    printf("Failed to find suitable memory type!\n");
+    return UINT32_MAX;
+}
+
+static poc_result create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
+                               VkMemoryPropertyFlags properties,
+                               VkBuffer *buffer, VkDeviceMemory *buffer_memory) {
+    VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    VK_CHECK(vkCreateBuffer(g_vk_state.device, &buffer_info, NULL, buffer));
+
+    VkMemoryRequirements mem_requirements;
+    vkGetBufferMemoryRequirements(g_vk_state.device, *buffer, &mem_requirements);
+
+    VkMemoryAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_requirements.size,
+        .memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits, properties)
+    };
+
+    if (alloc_info.memoryTypeIndex == UINT32_MAX) {
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    VK_CHECK(vkAllocateMemory(g_vk_state.device, &alloc_info, NULL, buffer_memory));
+    VK_CHECK(vkBindBufferMemory(g_vk_state.device, *buffer, *buffer_memory, 0));
+
+    return POC_RESULT_SUCCESS;
+}
+
+static poc_result create_uniform_buffers(poc_context *ctx) {
+    VkDeviceSize buffer_size = sizeof(UniformBufferObject);
+
+    ctx->uniform_buffers = malloc(MAX_FRAMES_IN_FLIGHT * sizeof(VkBuffer));
+    ctx->uniform_buffers_memory = malloc(MAX_FRAMES_IN_FLIGHT * sizeof(VkDeviceMemory));
+    ctx->uniform_buffers_mapped = malloc(MAX_FRAMES_IN_FLIGHT * sizeof(void*));
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        poc_result result = create_buffer(buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                         &ctx->uniform_buffers[i], &ctx->uniform_buffers_memory[i]);
+        if (result != POC_RESULT_SUCCESS) {
+            return result;
+        }
+
+        VK_CHECK(vkMapMemory(g_vk_state.device, ctx->uniform_buffers_memory[i], 0, buffer_size, 0, &ctx->uniform_buffers_mapped[i]));
+    }
+
+    printf("✓ Uniform buffers created (%d buffers)\n", MAX_FRAMES_IN_FLIGHT);
+    return POC_RESULT_SUCCESS;
+}
+
+static poc_result create_descriptor_pool(poc_context *ctx) {
+    VkDescriptorPoolSize pool_size = {
+        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = MAX_FRAMES_IN_FLIGHT
+    };
+
+    VkDescriptorPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .poolSizeCount = 1,
+        .pPoolSizes = &pool_size,
+        .maxSets = MAX_FRAMES_IN_FLIGHT
+    };
+
+    VK_CHECK(vkCreateDescriptorPool(g_vk_state.device, &pool_info, NULL, &ctx->descriptor_pool));
+
+    printf("✓ Descriptor pool created\n");
+    return POC_RESULT_SUCCESS;
+}
+
+static poc_result create_descriptor_sets(poc_context *ctx) {
+    VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        layouts[i] = ctx->descriptor_set_layout;
+    }
+
+    VkDescriptorSetAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = ctx->descriptor_pool,
+        .descriptorSetCount = MAX_FRAMES_IN_FLIGHT,
+        .pSetLayouts = layouts
+    };
+
+    ctx->descriptor_sets = malloc(MAX_FRAMES_IN_FLIGHT * sizeof(VkDescriptorSet));
+    VK_CHECK(vkAllocateDescriptorSets(g_vk_state.device, &alloc_info, ctx->descriptor_sets));
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkDescriptorBufferInfo buffer_info = {
+            .buffer = ctx->uniform_buffers[i],
+            .offset = 0,
+            .range = sizeof(UniformBufferObject)
+        };
+
+        VkWriteDescriptorSet descriptor_write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = ctx->descriptor_sets[i],
+            .dstBinding = 0,
+            .dstArrayElement = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .pBufferInfo = &buffer_info,
+            .pImageInfo = NULL,
+            .pTexelBufferView = NULL
+        };
+
+        vkUpdateDescriptorSets(g_vk_state.device, 1, &descriptor_write, 0, NULL);
+    }
+
+    printf("✓ Descriptor sets created and updated (%d sets)\n", MAX_FRAMES_IN_FLIGHT);
     return POC_RESULT_SUCCESS;
 }
 
@@ -1516,6 +1682,30 @@ poc_context *vulkan_context_create(podi_window *window) {
         return NULL;
     }
 
+    // Create uniform buffers
+    result = create_uniform_buffers(ctx);
+    if (result != POC_RESULT_SUCCESS) {
+        vkDestroySurfaceKHR(g_vk_state.instance, surface, NULL);
+        free(ctx);
+        return NULL;
+    }
+
+    // Create descriptor pool
+    result = create_descriptor_pool(ctx);
+    if (result != POC_RESULT_SUCCESS) {
+        vkDestroySurfaceKHR(g_vk_state.instance, surface, NULL);
+        free(ctx);
+        return NULL;
+    }
+
+    // Create descriptor sets
+    result = create_descriptor_sets(ctx);
+    if (result != POC_RESULT_SUCCESS) {
+        vkDestroySurfaceKHR(g_vk_state.instance, surface, NULL);
+        free(ctx);
+        return NULL;
+    }
+
     // Create framebuffers
     result = create_framebuffers(ctx);
     if (result != POC_RESULT_SUCCESS) {
@@ -1589,6 +1779,41 @@ void vulkan_context_destroy(poc_context *ctx) {
         vkDestroySwapchainKHR(g_vk_state.device, ctx->swapchain, NULL);
     }
 
+    // Destroy uniform buffers and descriptor resources
+    if (ctx->uniform_buffers) {
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            if (ctx->uniform_buffers[i] != VK_NULL_HANDLE) {
+                vkDestroyBuffer(g_vk_state.device, ctx->uniform_buffers[i], NULL);
+            }
+        }
+        free(ctx->uniform_buffers);
+    }
+
+    if (ctx->uniform_buffers_memory) {
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            if (ctx->uniform_buffers_memory[i] != VK_NULL_HANDLE) {
+                vkFreeMemory(g_vk_state.device, ctx->uniform_buffers_memory[i], NULL);
+            }
+        }
+        free(ctx->uniform_buffers_memory);
+    }
+
+    if (ctx->uniform_buffers_mapped) {
+        free(ctx->uniform_buffers_mapped);
+    }
+
+    if (ctx->descriptor_pool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(g_vk_state.device, ctx->descriptor_pool, NULL);
+    }
+
+    if (ctx->descriptor_sets) {
+        free(ctx->descriptor_sets);
+    }
+
+    if (ctx->descriptor_set_layout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(g_vk_state.device, ctx->descriptor_set_layout, NULL);
+    }
+
     // Destroy rendering pipeline resources (dependent on render pass)
     if (ctx->graphics_pipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(g_vk_state.device, ctx->graphics_pipeline, NULL);
@@ -1617,6 +1842,34 @@ void vulkan_context_destroy(poc_context *ctx) {
 
     free(ctx);
     printf("✓ Vulkan context destroyed\n");
+}
+
+static void update_uniform_buffer(poc_context *ctx, uint32_t current_image) {
+    static float time = 0.0f;
+    time += 0.016f; // Approximate 60 FPS
+
+    UniformBufferObject ubo = {0};
+
+    // Model matrix - rotating cube
+    glm_mat4_identity(ubo.model);
+    glm_rotate(ubo.model, time * glm_rad(90.0f), (vec3){0.0f, 1.0f, 0.0f});
+
+    // View matrix - camera looking at the cube from a distance
+    vec3 eye = {2.0f, 2.0f, 2.0f};
+    vec3 center = {0.0f, 0.0f, 0.0f};
+    vec3 up = {0.0f, 1.0f, 0.0f};
+    glm_lookat(eye, center, up, ubo.view);
+
+    // Projection matrix
+    float aspect_ratio = (float)ctx->swapchain_extent.width / (float)ctx->swapchain_extent.height;
+    glm_perspective(glm_rad(45.0f), aspect_ratio, 0.1f, 10.0f, ubo.proj);
+
+    // GLM was originally designed for OpenGL, where the Y coordinate of the clip coordinates is inverted
+    // Since we're using Vulkan, we need to flip the Y coordinate of the projection matrix
+    ubo.proj[1][1] *= -1;
+
+    // Copy data to uniform buffer
+    memcpy(ctx->uniform_buffers_mapped[current_image], &ubo, sizeof(ubo));
 }
 
 poc_result vulkan_context_begin_frame(poc_context *ctx) {
@@ -1726,8 +1979,15 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
     };
     vkCmdSetScissor(ctx->command_buffers[image_index], 0, 1, &scissor);
 
-    // Draw triangle (3 vertices, 1 instance, no vertex buffers needed as vertices are hardcoded in shader)
-    vkCmdDraw(ctx->command_buffers[image_index], 3, 1, 0, 0);
+    // Update uniform buffer with current MVP matrices
+    update_uniform_buffer(ctx, ctx->current_frame);
+
+    // Bind descriptor sets for uniform buffer
+    vkCmdBindDescriptorSets(ctx->command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           ctx->pipeline_layout, 0, 1, &ctx->descriptor_sets[ctx->current_frame], 0, NULL);
+
+    // Draw cube (36 vertices, 1 instance, no vertex buffers needed as vertices are hardcoded in shader)
+    vkCmdDraw(ctx->command_buffers[image_index], 36, 1, 0, 0);
 
     // End render pass
     vkCmdEndRenderPass(ctx->command_buffers[image_index]);

@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -std=c23 -Wall -Wextra -Werror -Iinclude -Ideps/podi/include
+CFLAGS = -std=c23 -Wall -Wextra -Werror -Iinclude -Ideps/podi/include -Ideps/cglm/include
 LDFLAGS =
 
 UNAME_S := $(shell uname -s)
@@ -42,12 +42,8 @@ EXAMPLEDIR = examples
 DEPSDIR = deps
 SHADERDIR = shaders
 
-PODI_REPO = https://github.com/slaide/podi.git
 PODI_DIR = $(DEPSDIR)/podi
 PODI_LIB = $(PODI_DIR)/lib/libpodi$(shell if [ "$(UNAME_S)" = "Darwin" ]; then echo ".dylib"; else echo ".so"; fi)
-
-# To use a local podi directory for development, set PODI_LOCAL_DIR:
-# make PODI_LOCAL_DIR=/path/to/local/podi
 
 SOURCES = $(wildcard $(SRCDIR)/*.c)
 OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
@@ -58,11 +54,15 @@ EXAMPLE_TARGETS = $(EXAMPLE_SOURCES:$(EXAMPLEDIR)/%.c=$(EXAMPLEDIR)/%)
 SHADER_SOURCES = $(wildcard $(SHADERDIR)/*.vert $(SHADERDIR)/*.frag)
 SHADER_SPIRV = $(SHADER_SOURCES:%=%.spv)
 
-.PHONY: all clean examples podi deps run shaders
+.PHONY: all clean examples podi deps run shaders submodules
 
 all: deps shaders examples
 
-deps: podi
+deps: submodules podi
+
+submodules:
+	@echo "Updating git submodules..."
+	@git submodule update --init --recursive
 
 podi: $(PODI_LIB)
 
@@ -77,15 +77,10 @@ shaders: $(SHADER_SPIRV)
 	@glslangValidator -V $< -o $@
 
 $(PODI_LIB):
-	@echo "Setting up podi dependency..."
-	@if [ -n "$(PODI_LOCAL_DIR)" ] && [ -d "$(PODI_LOCAL_DIR)" ]; then \
-		echo "Using local podi directory: $(PODI_LOCAL_DIR)"; \
-		mkdir -p $(DEPSDIR) && \
-		ln -sf $(PODI_LOCAL_DIR) $(PODI_DIR); \
-	elif [ ! -d "$(PODI_DIR)" ]; then \
-		echo "Cloning podi from remote..."; \
-		mkdir -p $(DEPSDIR) && \
-		git clone $(PODI_REPO) $(PODI_DIR); \
+	@echo "Building podi dependency..."
+	@if [ ! -d "$(PODI_DIR)" ]; then \
+		echo "Error: podi submodule not found. Run 'git submodule update --init --recursive'"; \
+		exit 1; \
 	fi
 	@cd $(PODI_DIR) && $(MAKE)
 

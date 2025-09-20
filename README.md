@@ -9,7 +9,7 @@ POC Engine is a graphics framework that renders to windows provided by the [Podi
   - Metal on macOS (planned)
 - **Window management via Podi**
 - **C23 implementation**
-- **Automatic dependency management** (clones and builds Podi)
+- **Git submodule dependency management** (cglm math library, Podi windowing)
 
 ## Building
 
@@ -20,6 +20,7 @@ POC Engine is a graphics framework that renders to windows provided by the [Podi
 - Vulkan development libraries (`libvulkan-dev` on Ubuntu/Debian)
 - X11 development libraries (`libx11-dev` on Ubuntu/Debian)
 - Wayland development libraries (`libwayland-dev wayland-protocols` on Ubuntu/Debian)
+- GLSL shader compiler (`glslang-tools` on Ubuntu/Debian)
 
 **macOS (ARM64):**
 - Xcode command line tools
@@ -28,11 +29,14 @@ POC Engine is a graphics framework that renders to windows provided by the [Podi
 ### Build Instructions
 
 ```bash
-# Clone the repository
-git clone <repository-url>
+# Clone the repository with submodules
+git clone --recursive <repository-url>
 cd poc-engine
 
-# Build everything (automatically clones and builds Podi)
+# Or if already cloned, initialize submodules
+git submodule update --init --recursive
+
+# Build everything (automatically updates submodules and builds dependencies)
 make
 
 # Build with debug symbols
@@ -219,12 +223,15 @@ POC Engine is designed as a lightweight graphics abstraction layer on top of Pod
 
 ## Status
 
-- ✅ Linux Vulkan backend (basic initialization)
-- ✅ Automatic Podi dependency management
-- ✅ Basic example application
-- 🚧 Complete Vulkan rendering pipeline
+- ✅ Linux Vulkan backend with complete 3D rendering pipeline
+- ✅ Git submodule dependency management (cglm, Podi)
+- ✅ 3D cube rendering with perspective camera
+- ✅ GLSL shaders compiled to SPIR-V
+- ✅ Uniform buffer objects and descriptor sets
+- ✅ Proper backface culling and matrix transformations
+- ✅ Window resizing and swapchain recreation
 - 🚧 macOS Metal backend
-- 🚧 Advanced rendering features
+- 🚧 Advanced rendering features (textures, lighting, models)
 
 ## Contributing
 

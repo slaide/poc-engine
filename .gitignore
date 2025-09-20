@@ -12,7 +12,9 @@ obj/
 examples/basic
 
 # Dependencies
-deps/
+deps/*
+!deps/cglm/
+!deps/podi/
 
 # Debug files
 *.dSYM/
