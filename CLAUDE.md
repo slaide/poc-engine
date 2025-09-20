@@ -45,6 +45,7 @@ POC Engine is a C23 graphics framework that provides a cross-platform abstractio
 ### Dependencies
 
 - **Podi**: Cross-platform window management library (auto-cloned from https://github.com/slaide/podi.git)
+- **cglm**: Math library for graphics (in deps/cglm, auto-managed submodule)
 - **Platform Libraries**:
   - Linux: Vulkan, X11, Wayland, xkbcommon
   - macOS: Cocoa, Metal, MetalKit frameworks
@@ -56,6 +57,7 @@ The Makefile automatically:
 - Sets appropriate compiler flags and platform defines
 - Clones and builds Podi dependency if needed
 - Links examples against the engine and platform libraries
+- Compiles GLSL shaders to SPIR-V using glslangValidator
 
 ### Development Workflow
 
@@ -70,7 +72,7 @@ The Makefile automatically:
 
 - Place GLSL shaders in `shaders/` directory with `.vert` and `.frag` extensions
 - Shaders are automatically compiled to SPIR-V during build using glslangValidator
-- Current implementation includes a triangle shader that renders a colored triangle
+- Current implementation includes triangle and cube shaders for rendering
 - Shaders are loaded at runtime from the compiled `.spv` files
 
 ### Important Implementation Notes
@@ -80,3 +82,12 @@ The Makefile automatically:
 - Error handling through `poc_result` enum with descriptive error codes
 - Renderer abstraction allows runtime selection of graphics backend
 - Context-based rendering model tied to Podi windows
+- Application timing utilities: `poc_get_time()` returns elapsed seconds since init, `poc_sleep()` for delays
+
+### API Structure
+
+The engine follows a layered initialization pattern:
+1. `poc_init()` with config - initializes graphics backend
+2. `poc_context_create()` - creates rendering context for a Podi window
+3. Frame rendering loop: `poc_context_begin_frame()` → rendering commands → `poc_context_end_frame()`
+4. Cleanup: `poc_context_destroy()` → `poc_shutdown()`

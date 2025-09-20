@@ -49,6 +49,15 @@ int my_main(podi_application *app) {
         return -1;
     }
 
+    // Load the cube model
+    result = poc_context_load_model(ctx, "models/cube.obj");
+    if (result != POC_RESULT_SUCCESS) {
+        printf("Failed to load cube model: %s\n", poc_result_to_string(result));
+        printf("Falling back to hardcoded cube\n");
+    } else {
+        printf("✓ Cube model loaded successfully\n");
+    }
+
     const double target_fps = 120.0;
 
     printf("POC Engine basic example running...\n");

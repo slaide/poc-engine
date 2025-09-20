@@ -196,6 +196,28 @@ void poc_context_clear_color(poc_context *ctx, float r, float g, float b, float 
 #endif
 }
 
+poc_result poc_context_load_model(poc_context *ctx, const char *obj_filename) {
+    if (!ctx || !obj_filename) {
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+#ifdef POC_PLATFORM_LINUX
+    if (g_current_renderer == POC_RENDERER_VULKAN) {
+        return vulkan_context_load_model(ctx, obj_filename);
+    }
+#endif
+
+#ifdef POC_PLATFORM_MACOS
+    if (g_current_renderer == POC_RENDERER_METAL) {
+        // Metal implementation would go here
+        printf("Model loading not yet implemented for Metal renderer\n");
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+#endif
+
+    return POC_RESULT_ERROR_INIT_FAILED;
+}
+
 const char *poc_result_to_string(poc_result result) {
     switch (result) {
         case POC_RESULT_SUCCESS: return "Success";

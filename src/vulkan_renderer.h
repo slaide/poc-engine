@@ -1,6 +1,7 @@
 #pragma once
 
 #include "poc_engine.h"
+#include "obj_loader.h"
 
 #ifdef POC_PLATFORM_LINUX
 
@@ -14,5 +15,9 @@ poc_result vulkan_context_begin_frame(poc_context *ctx);
 poc_result vulkan_context_end_frame(poc_context *ctx);
 
 void vulkan_context_clear_color(poc_context *ctx, float r, float g, float b, float a);
+
+// Model rendering functions
+poc_result vulkan_context_load_model(poc_context *ctx, const char *obj_filename);
+poc_result vulkan_context_set_vertex_data(poc_context *ctx, poc_vertex *vertices, uint32_t vertex_count, uint32_t *indices, uint32_t index_count);
 
 #endif

@@ -1,0 +1,19 @@
+# Cube Material
+# Created for POC Engine
+
+newmtl CubeMaterial
+# Ambient color (Ka)
+Ka 0.2 0.2 0.2
+# Diffuse color (Kd) - main surface color
+Kd 0.8 0.6 0.4
+# Specular color (Ks)
+Ks 1.0 1.0 1.0
+# Specular exponent (Ns) - shininess
+Ns 32.0
+# Optical density/Index of refraction (Ni)
+Ni 1.0
+# Transparency (d) - 1.0 = opaque, 0.0 = transparent
+d 1.0
+# Illumination model (illum)
+# 2 = highlight on, ambient on, diffuse on
+illum 2

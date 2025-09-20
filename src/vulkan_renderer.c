@@ -2,10 +2,12 @@
 
 #include "vulkan_renderer.h"
 #include "poc_engine.h"
+#include "obj_loader.h"
 #include <vulkan/vulkan.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 #include <math.h>
 #include <cglm/cglm.h>
 
@@ -42,6 +44,16 @@ typedef struct {
     mat4 model;
     mat4 view;
     mat4 proj;
+    vec3 ambient_color;
+    float _pad1;
+    vec3 diffuse_color;
+    float _pad2;
+    vec3 specular_color;
+    float shininess;
+    vec3 light_pos;
+    float _pad3;
+    vec3 view_pos;
+    float _pad4;
 } UniformBufferObject;
 
 #define VK_CHECK(result) \
@@ -124,6 +136,19 @@ struct poc_context {
 
     // Camera/transformation data
     float camera_rotation_y;
+
+    // Model rendering support
+    VkBuffer vertex_buffer;
+    VkDeviceMemory vertex_buffer_memory;
+    VkBuffer index_buffer;
+    VkDeviceMemory index_buffer_memory;
+    uint32_t current_vertex_count;
+    uint32_t current_index_count;
+
+    // Depth buffer
+    VkImage depth_image;
+    VkDeviceMemory depth_image_memory;
+    VkImageView depth_image_view;
 };
 
 static vulkan_state g_vk_state = {0};
@@ -1083,13 +1108,14 @@ static poc_result create_framebuffers(poc_context *ctx) {
 
     for (uint32_t i = 0; i < ctx->swapchain_image_count; i++) {
         VkImageView attachments[] = {
-            ctx->swapchain_image_views[i]
+            ctx->swapchain_image_views[i],
+            ctx->depth_image_view
         };
 
         VkFramebufferCreateInfo framebuffer_info = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .renderPass = ctx->render_pass,
-            .attachmentCount = 1,
+            .attachmentCount = 2,
             .pAttachments = attachments,
             .width = ctx->swapchain_extent.width,
             .height = ctx->swapchain_extent.height,
@@ -1252,16 +1278,52 @@ static VkShaderModule create_shader_module(const char *filename) {
     return shader_module;
 }
 
+static VkFormat find_depth_format(void) {
+    VkFormat candidates[] = {
+        VK_FORMAT_D32_SFLOAT,
+        VK_FORMAT_D32_SFLOAT_S8_UINT,
+        VK_FORMAT_D24_UNORM_S8_UINT
+    };
+
+    for (uint32_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        VkFormatProperties props;
+        vkGetPhysicalDeviceFormatProperties(g_vk_state.physical_device, candidates[i], &props);
+
+        if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+            return candidates[i];
+        }
+    }
+
+    printf("Failed to find supported depth format!\n");
+    return VK_FORMAT_UNDEFINED;
+}
+
 static poc_result create_render_pass(poc_context *ctx) {
-    VkAttachmentDescription color_attachment = {
-        .format = ctx->swapchain_format,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+    VkFormat depth_format = find_depth_format();
+
+    VkAttachmentDescription attachments[2] = {
+        // Color attachment
+        {
+            .format = ctx->swapchain_format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+        },
+        // Depth attachment
+        {
+            .format = depth_format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        }
     };
 
     VkAttachmentReference color_attachment_ref = {
@@ -1269,25 +1331,31 @@ static poc_result create_render_pass(poc_context *ctx) {
         .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
     };
 
+    VkAttachmentReference depth_attachment_ref = {
+        .attachment = 1,
+        .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    };
+
     VkSubpassDescription subpass = {
         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
         .colorAttachmentCount = 1,
-        .pColorAttachments = &color_attachment_ref
+        .pColorAttachments = &color_attachment_ref,
+        .pDepthStencilAttachment = &depth_attachment_ref
     };
 
     VkSubpassDependency dependency = {
         .srcSubpass = VK_SUBPASS_EXTERNAL,
         .dstSubpass = 0,
-        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
         .srcAccessMask = 0,
-        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
     };
 
     VkRenderPassCreateInfo render_pass_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &color_attachment,
+        .attachmentCount = 2,
+        .pAttachments = attachments,
         .subpassCount = 1,
         .pSubpasses = &subpass,
         .dependencyCount = 1,
@@ -1296,7 +1364,7 @@ static poc_result create_render_pass(poc_context *ctx) {
 
     VK_CHECK(vkCreateRenderPass(g_vk_state.device, &render_pass_info, NULL, &ctx->render_pass));
 
-    printf("✓ Render pass created\n");
+    printf("✓ Render pass created with depth attachment\n");
     return POC_RESULT_SUCCESS;
 }
 
@@ -1326,12 +1394,41 @@ static poc_result create_graphics_pipeline(poc_context *ctx) {
 
     VkPipelineShaderStageCreateInfo shader_stages[] = {vert_shader_stage_info, frag_shader_stage_info};
 
+    // Vertex input binding description
+    VkVertexInputBindingDescription binding_description = {
+        .binding = 0,
+        .stride = sizeof(poc_vertex),
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
+    };
+
+    // Vertex input attribute descriptions
+    VkVertexInputAttributeDescription attribute_descriptions[3] = {
+        {
+            .binding = 0,
+            .location = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,  // position (vec3)
+            .offset = offsetof(poc_vertex, position)
+        },
+        {
+            .binding = 0,
+            .location = 1,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,  // normal (vec3)
+            .offset = offsetof(poc_vertex, normal)
+        },
+        {
+            .binding = 0,
+            .location = 2,
+            .format = VK_FORMAT_R32G32_SFLOAT,     // texcoord (vec2)
+            .offset = offsetof(poc_vertex, texcoord)
+        }
+    };
+
     VkPipelineVertexInputStateCreateInfo vertex_input_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        .vertexBindingDescriptionCount = 0,
-        .pVertexBindingDescriptions = NULL,
-        .vertexAttributeDescriptionCount = 0,
-        .pVertexAttributeDescriptions = NULL
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &binding_description,
+        .vertexAttributeDescriptionCount = 3,
+        .pVertexAttributeDescriptions = attribute_descriptions
     };
 
     VkPipelineInputAssemblyStateCreateInfo input_assembly = {
@@ -1365,8 +1462,8 @@ static poc_result create_graphics_pipeline(poc_context *ctx) {
         .rasterizerDiscardEnable = VK_FALSE,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .lineWidth = 1.0f,
-        .cullMode = VK_CULL_MODE_BACK_BIT,
-        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+        .cullMode = VK_CULL_MODE_BACK_BIT,  // Back-face culling
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,  // Match OBJ convention
         .depthBiasEnable = VK_FALSE
     };
 
@@ -1398,7 +1495,7 @@ static poc_result create_graphics_pipeline(poc_context *ctx) {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         .descriptorCount = 1,
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         .pImmutableSamplers = NULL
     };
 
@@ -1420,6 +1517,19 @@ static poc_result create_graphics_pipeline(poc_context *ctx) {
 
     VK_CHECK(vkCreatePipelineLayout(g_vk_state.device, &pipeline_layout_info, NULL, &ctx->pipeline_layout));
 
+    VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_TRUE,
+        .depthWriteEnable = VK_TRUE,
+        .depthCompareOp = VK_COMPARE_OP_LESS,
+        .depthBoundsTestEnable = VK_FALSE,
+        .minDepthBounds = 0.0f,
+        .maxDepthBounds = 1.0f,
+        .stencilTestEnable = VK_FALSE,
+        .front = {},
+        .back = {}
+    };
+
     VkGraphicsPipelineCreateInfo pipeline_info = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .stageCount = 2,
@@ -1429,7 +1539,7 @@ static poc_result create_graphics_pipeline(poc_context *ctx) {
         .pViewportState = &viewport_state,
         .pRasterizationState = &rasterizer,
         .pMultisampleState = &multisampling,
-        .pDepthStencilState = NULL,
+        .pDepthStencilState = &depth_stencil,
         .pColorBlendState = &color_blending,
         .pDynamicState = &dynamic_state,
         .layout = ctx->pipeline_layout,
@@ -1574,6 +1684,177 @@ static poc_result create_descriptor_sets(poc_context *ctx) {
     return POC_RESULT_SUCCESS;
 }
 
+static poc_result copy_buffer(VkBuffer src_buffer, VkBuffer dst_buffer, VkDeviceSize size, poc_context *ctx) {
+    VkCommandBufferAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandPool = ctx->command_pool,
+        .commandBufferCount = 1
+    };
+
+    VkCommandBuffer command_buffer;
+    vkAllocateCommandBuffers(g_vk_state.device, &alloc_info, &command_buffer);
+
+    VkCommandBufferBeginInfo begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+    };
+
+    vkBeginCommandBuffer(command_buffer, &begin_info);
+
+    VkBufferCopy copy_region = {
+        .srcOffset = 0,
+        .dstOffset = 0,
+        .size = size
+    };
+    vkCmdCopyBuffer(command_buffer, src_buffer, dst_buffer, 1, &copy_region);
+
+    vkEndCommandBuffer(command_buffer);
+
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command_buffer
+    };
+
+    vkQueueSubmit(g_vk_state.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+    vkQueueWaitIdle(g_vk_state.graphics_queue);
+
+    vkFreeCommandBuffers(g_vk_state.device, ctx->command_pool, 1, &command_buffer);
+
+    return POC_RESULT_SUCCESS;
+}
+
+static poc_result create_vertex_buffer(poc_context *ctx, poc_vertex *vertices, uint32_t vertex_count) {
+    VkDeviceSize buffer_size = sizeof(poc_vertex) * vertex_count;
+
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_buffer_memory;
+    poc_result result = create_buffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                     &staging_buffer, &staging_buffer_memory);
+    if (result != POC_RESULT_SUCCESS) {
+        printf("Failed to create staging buffer for vertex data\n");
+        return result;
+    }
+
+    void *data;
+    vkMapMemory(g_vk_state.device, staging_buffer_memory, 0, buffer_size, 0, &data);
+    memcpy(data, vertices, buffer_size);
+    vkUnmapMemory(g_vk_state.device, staging_buffer_memory);
+
+    result = create_buffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                          &ctx->vertex_buffer, &ctx->vertex_buffer_memory);
+    if (result != POC_RESULT_SUCCESS) {
+        printf("Failed to create vertex buffer\n");
+        vkDestroyBuffer(g_vk_state.device, staging_buffer, NULL);
+        vkFreeMemory(g_vk_state.device, staging_buffer_memory, NULL);
+        return result;
+    }
+
+    copy_buffer(staging_buffer, ctx->vertex_buffer, buffer_size, ctx);
+
+    vkDestroyBuffer(g_vk_state.device, staging_buffer, NULL);
+    vkFreeMemory(g_vk_state.device, staging_buffer_memory, NULL);
+
+    ctx->current_vertex_count = vertex_count;
+    return POC_RESULT_SUCCESS;
+}
+
+static poc_result create_index_buffer(poc_context *ctx, uint32_t *indices, uint32_t index_count) {
+    VkDeviceSize buffer_size = sizeof(uint32_t) * index_count;
+
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_buffer_memory;
+    poc_result result = create_buffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                     &staging_buffer, &staging_buffer_memory);
+    if (result != POC_RESULT_SUCCESS) {
+        printf("Failed to create staging buffer for index data\n");
+        return result;
+    }
+
+    void *data;
+    vkMapMemory(g_vk_state.device, staging_buffer_memory, 0, buffer_size, 0, &data);
+    memcpy(data, indices, buffer_size);
+    vkUnmapMemory(g_vk_state.device, staging_buffer_memory);
+
+    result = create_buffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                          &ctx->index_buffer, &ctx->index_buffer_memory);
+    if (result != POC_RESULT_SUCCESS) {
+        printf("Failed to create index buffer\n");
+        vkDestroyBuffer(g_vk_state.device, staging_buffer, NULL);
+        vkFreeMemory(g_vk_state.device, staging_buffer_memory, NULL);
+        return result;
+    }
+
+    copy_buffer(staging_buffer, ctx->index_buffer, buffer_size, ctx);
+
+    vkDestroyBuffer(g_vk_state.device, staging_buffer, NULL);
+    vkFreeMemory(g_vk_state.device, staging_buffer_memory, NULL);
+
+    ctx->current_index_count = index_count;
+    return POC_RESULT_SUCCESS;
+}
+
+static poc_result create_depth_resources(poc_context *ctx) {
+    VkFormat depth_format = find_depth_format();
+    if (depth_format == VK_FORMAT_UNDEFINED) {
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    // Create depth image
+    VkImageCreateInfo image_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .extent.width = ctx->swapchain_extent.width,
+        .extent.height = ctx->swapchain_extent.height,
+        .extent.depth = 1,
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .format = depth_format,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    VK_CHECK(vkCreateImage(g_vk_state.device, &image_info, NULL, &ctx->depth_image));
+
+    VkMemoryRequirements mem_requirements;
+    vkGetImageMemoryRequirements(g_vk_state.device, ctx->depth_image, &mem_requirements);
+
+    VkMemoryAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_requirements.size,
+        .memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+    };
+
+    VK_CHECK(vkAllocateMemory(g_vk_state.device, &alloc_info, NULL, &ctx->depth_image_memory));
+    vkBindImageMemory(g_vk_state.device, ctx->depth_image, ctx->depth_image_memory, 0);
+
+    // Create depth image view
+    VkImageViewCreateInfo view_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = ctx->depth_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = depth_format,
+        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+        .subresourceRange.baseMipLevel = 0,
+        .subresourceRange.levelCount = 1,
+        .subresourceRange.baseArrayLayer = 0,
+        .subresourceRange.layerCount = 1
+    };
+
+    VK_CHECK(vkCreateImageView(g_vk_state.device, &view_info, NULL, &ctx->depth_image_view));
+
+    printf("✓ Depth buffer created (%ux%u)\n", ctx->swapchain_extent.width, ctx->swapchain_extent.height);
+    return POC_RESULT_SUCCESS;
+}
+
 
 poc_context *vulkan_context_create(podi_window *window) {
     if (!window) {
@@ -1706,6 +1987,14 @@ poc_context *vulkan_context_create(podi_window *window) {
         return NULL;
     }
 
+    // Create depth buffer
+    result = create_depth_resources(ctx);
+    if (result != POC_RESULT_SUCCESS) {
+        vkDestroySurfaceKHR(g_vk_state.instance, surface, NULL);
+        free(ctx);
+        return NULL;
+    }
+
     // Create framebuffers
     result = create_framebuffers(ctx);
     if (result != POC_RESULT_SUCCESS) {
@@ -1814,6 +2103,31 @@ void vulkan_context_destroy(poc_context *ctx) {
         vkDestroyDescriptorSetLayout(g_vk_state.device, ctx->descriptor_set_layout, NULL);
     }
 
+    // Destroy vertex and index buffers
+    if (ctx->vertex_buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_vk_state.device, ctx->vertex_buffer, NULL);
+    }
+    if (ctx->vertex_buffer_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_vk_state.device, ctx->vertex_buffer_memory, NULL);
+    }
+    if (ctx->index_buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_vk_state.device, ctx->index_buffer, NULL);
+    }
+    if (ctx->index_buffer_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_vk_state.device, ctx->index_buffer_memory, NULL);
+    }
+
+    // Destroy depth resources
+    if (ctx->depth_image_view != VK_NULL_HANDLE) {
+        vkDestroyImageView(g_vk_state.device, ctx->depth_image_view, NULL);
+    }
+    if (ctx->depth_image != VK_NULL_HANDLE) {
+        vkDestroyImage(g_vk_state.device, ctx->depth_image, NULL);
+    }
+    if (ctx->depth_image_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_vk_state.device, ctx->depth_image_memory, NULL);
+    }
+
     // Destroy rendering pipeline resources (dependent on render pass)
     if (ctx->graphics_pipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(g_vk_state.device, ctx->graphics_pipeline, NULL);
@@ -1844,7 +2158,7 @@ void vulkan_context_destroy(poc_context *ctx) {
     printf("✓ Vulkan context destroyed\n");
 }
 
-static void update_uniform_buffer(poc_context *ctx, uint32_t current_image) {
+static void update_uniform_buffer(poc_context *ctx, uint32_t current_image, const poc_material *material) {
     static float time = 0.0f;
     time += 0.016f; // Approximate 60 FPS
 
@@ -1867,6 +2181,40 @@ static void update_uniform_buffer(poc_context *ctx, uint32_t current_image) {
     // GLM was originally designed for OpenGL, where the Y coordinate of the clip coordinates is inverted
     // Since we're using Vulkan, we need to flip the Y coordinate of the projection matrix
     ubo.proj[1][1] *= -1;
+
+    // Material properties
+    if (material) {
+        ubo.ambient_color[0] = material->ambient[0];
+        ubo.ambient_color[1] = material->ambient[1];
+        ubo.ambient_color[2] = material->ambient[2];
+        ubo.diffuse_color[0] = material->diffuse[0];
+        ubo.diffuse_color[1] = material->diffuse[1];
+        ubo.diffuse_color[2] = material->diffuse[2];
+        ubo.specular_color[0] = material->specular[0];
+        ubo.specular_color[1] = material->specular[1];
+        ubo.specular_color[2] = material->specular[2];
+        ubo.shininess = material->shininess;
+    } else {
+        // Default material
+        ubo.ambient_color[0] = 0.2f;
+        ubo.ambient_color[1] = 0.2f;
+        ubo.ambient_color[2] = 0.2f;
+        ubo.diffuse_color[0] = 0.8f;
+        ubo.diffuse_color[1] = 0.6f;
+        ubo.diffuse_color[2] = 0.4f;
+        ubo.specular_color[0] = 1.0f;
+        ubo.specular_color[1] = 1.0f;
+        ubo.specular_color[2] = 1.0f;
+        ubo.shininess = 32.0f;
+    }
+
+    // Lighting
+    ubo.light_pos[0] = 2.0f;
+    ubo.light_pos[1] = 4.0f;
+    ubo.light_pos[2] = 2.0f;
+    ubo.view_pos[0] = eye[0];
+    ubo.view_pos[1] = eye[1];
+    ubo.view_pos[2] = eye[2];
 
     // Copy data to uniform buffer
     memcpy(ctx->uniform_buffers_mapped[current_image], &ubo, sizeof(ubo));
@@ -1944,7 +2292,10 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
     VK_CHECK(vkBeginCommandBuffer(ctx->command_buffers[image_index], &begin_info));
 
     // Begin render pass
-    VkClearValue clear_color = {{{ctx->clear_color[0], ctx->clear_color[1], ctx->clear_color[2], ctx->clear_color[3]}}};
+    VkClearValue clear_values[2] = {
+        [0] = {.color = {{ctx->clear_color[0], ctx->clear_color[1], ctx->clear_color[2], ctx->clear_color[3]}}},
+        [1] = {.depthStencil = {1.0f, 0}}
+    };
 
     VkRenderPassBeginInfo render_pass_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -1952,8 +2303,8 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
         .framebuffer = ctx->framebuffers[image_index],
         .renderArea.offset = {0, 0},
         .renderArea.extent = ctx->swapchain_extent,
-        .clearValueCount = 1,
-        .pClearValues = &clear_color
+        .clearValueCount = 2,
+        .pClearValues = clear_values
     };
 
     vkCmdBeginRenderPass(ctx->command_buffers[image_index], &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
@@ -1979,15 +2330,24 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
     };
     vkCmdSetScissor(ctx->command_buffers[image_index], 0, 1, &scissor);
 
-    // Update uniform buffer with current MVP matrices
-    update_uniform_buffer(ctx, ctx->current_frame);
+    // Update uniform buffer with current MVP matrices (using default material for now)
+    update_uniform_buffer(ctx, ctx->current_frame, NULL);
 
     // Bind descriptor sets for uniform buffer
     vkCmdBindDescriptorSets(ctx->command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS,
                            ctx->pipeline_layout, 0, 1, &ctx->descriptor_sets[ctx->current_frame], 0, NULL);
 
-    // Draw cube (36 vertices, 1 instance, no vertex buffers needed as vertices are hardcoded in shader)
-    vkCmdDraw(ctx->command_buffers[image_index], 36, 1, 0, 0);
+    // Draw using vertex and index buffers if available, otherwise use hardcoded vertices
+    if (ctx->vertex_buffer != VK_NULL_HANDLE && ctx->index_buffer != VK_NULL_HANDLE) {
+        VkBuffer vertex_buffers[] = {ctx->vertex_buffer};
+        VkDeviceSize offsets[] = {0};
+        vkCmdBindVertexBuffers(ctx->command_buffers[image_index], 0, 1, vertex_buffers, offsets);
+        vkCmdBindIndexBuffer(ctx->command_buffers[image_index], ctx->index_buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(ctx->command_buffers[image_index], ctx->current_index_count, 1, 0, 0, 0);
+    } else {
+        // Fallback to hardcoded cube (36 vertices, 1 instance, no vertex buffers needed as vertices are hardcoded in shader)
+        vkCmdDraw(ctx->command_buffers[image_index], 36, 1, 0, 0);
+    }
 
     // End render pass
     vkCmdEndRenderPass(ctx->command_buffers[image_index]);
@@ -2072,6 +2432,82 @@ void vulkan_context_clear_color(poc_context *ctx, float r, float g, float b, flo
     ctx->clear_color[1] = g;
     ctx->clear_color[2] = b;
     ctx->clear_color[3] = a;
+}
+
+poc_result vulkan_context_set_vertex_data(poc_context *ctx, poc_vertex *vertices, uint32_t vertex_count, uint32_t *indices, uint32_t index_count) {
+    if (!ctx || !vertices || !indices || vertex_count == 0 || index_count == 0) {
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    // Clean up existing buffers if any
+    if (ctx->vertex_buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_vk_state.device, ctx->vertex_buffer, NULL);
+        ctx->vertex_buffer = VK_NULL_HANDLE;
+    }
+    if (ctx->vertex_buffer_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_vk_state.device, ctx->vertex_buffer_memory, NULL);
+        ctx->vertex_buffer_memory = VK_NULL_HANDLE;
+    }
+    if (ctx->index_buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_vk_state.device, ctx->index_buffer, NULL);
+        ctx->index_buffer = VK_NULL_HANDLE;
+    }
+    if (ctx->index_buffer_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_vk_state.device, ctx->index_buffer_memory, NULL);
+        ctx->index_buffer_memory = VK_NULL_HANDLE;
+    }
+
+    // Create new buffers
+    poc_result result = create_vertex_buffer(ctx, vertices, vertex_count);
+    if (result != POC_RESULT_SUCCESS) {
+        return result;
+    }
+
+    result = create_index_buffer(ctx, indices, index_count);
+    if (result != POC_RESULT_SUCCESS) {
+        return result;
+    }
+
+    printf("✓ Model geometry loaded: %u vertices, %u indices\n", vertex_count, index_count);
+    return POC_RESULT_SUCCESS;
+}
+
+poc_result vulkan_context_load_model(poc_context *ctx, const char *obj_filename) {
+    if (!ctx || !obj_filename) {
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    poc_model model;
+    poc_obj_result obj_result = poc_model_load(obj_filename, &model);
+    if (obj_result != POC_OBJ_RESULT_SUCCESS) {
+        printf("Failed to load OBJ file %s: %s\n", obj_filename, poc_obj_result_to_string(obj_result));
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    printf("✓ OBJ file loaded: %u objects, %u materials\n", model.object_count, model.material_count);
+
+    // Find the first non-empty group in any object
+    poc_mesh_group *group = NULL;
+    for (uint32_t obj_idx = 0; obj_idx < model.object_count && !group; obj_idx++) {
+        for (uint32_t grp_idx = 0; grp_idx < model.objects[obj_idx].group_count; grp_idx++) {
+            if (model.objects[obj_idx].groups[grp_idx].vertex_count > 0) {
+                group = &model.objects[obj_idx].groups[grp_idx];
+                break;
+            }
+        }
+    }
+
+    if (group) {
+
+        poc_result result = vulkan_context_set_vertex_data(ctx, group->vertices, group->vertex_count, group->indices, group->index_count);
+
+        poc_model_destroy(&model);
+        return result;
+    } else {
+        printf("Warning: No geometry found in OBJ file\n");
+        poc_model_destroy(&model);
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
 }
 
 #endif

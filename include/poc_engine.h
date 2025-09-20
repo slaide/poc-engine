@@ -47,6 +47,9 @@ poc_result poc_context_end_frame(poc_context *ctx);
 
 void poc_context_clear_color(poc_context *ctx, float r, float g, float b, float a);
 
+// Model loading and rendering
+poc_result poc_context_load_model(poc_context *ctx, const char *obj_filename);
+
 const char *poc_result_to_string(poc_result result);
 
 double poc_get_time(void);
