@@ -1,3 +1,42 @@
+/**
+ * @file poc_engine.h
+ * @brief POC Engine - Cross-platform graphics rendering framework
+ *
+ * POC Engine provides a simple, cross-platform abstraction layer for 3D graphics
+ * rendering. It currently supports Vulkan on Linux with planned Metal support for macOS.
+ *
+ * @section usage Basic Usage
+ * @code
+ * // 1. Initialize the engine
+ * poc_config config = {
+ *     .renderer_type = POC_RENDERER_VULKAN,
+ *     .enable_validation = true,
+ *     .app_name = "My App",
+ *     .app_version = 1
+ * };
+ * poc_init(&config);
+ *
+ * // 2. Create a window and rendering context
+ * podi_window *window = podi_window_create("My Window", 800, 600);
+ * poc_context *ctx = poc_context_create(window);
+ *
+ * // 3. Render loop
+ * while (!podi_window_should_close(window)) {
+ *     podi_poll_events();
+ *
+ *     poc_context_begin_frame(ctx);
+ *     poc_context_clear_color(ctx, 0.0f, 0.0f, 0.0f, 1.0f);
+ *     // ... rendering commands ...
+ *     poc_context_end_frame(ctx);
+ * }
+ *
+ * // 4. Cleanup
+ * poc_context_destroy(ctx);
+ * podi_window_destroy(window);
+ * poc_shutdown();
+ * @endcode
+ */
+
 #pragma once
 
 #include <stdint.h>
@@ -8,51 +47,217 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Opaque handle to a rendering context
+ *
+ * A rendering context is tied to a specific window and manages all rendering
+ * state for that window. Each window should have its own context.
+ */
 typedef struct poc_context poc_context;
+
+/**
+ * @brief Opaque handle to the graphics renderer backend
+ *
+ * This is an internal structure that manages the platform-specific graphics
+ * implementation (Vulkan, Metal, etc.).
+ */
 typedef struct poc_renderer poc_renderer;
 
+/**
+ * @brief Graphics renderer backend types
+ *
+ * Specifies which graphics API backend to use for rendering.
+ * The available backends depend on the target platform.
+ */
 typedef enum {
-    POC_RENDERER_VULKAN,
+    POC_RENDERER_VULKAN,    /**< Vulkan renderer (Linux, Windows) */
 #ifdef POC_PLATFORM_MACOS
-    POC_RENDERER_METAL,
+    POC_RENDERER_METAL,     /**< Metal renderer (macOS only) */
 #endif
 } poc_renderer_type;
 
+/**
+ * @brief Result codes returned by POC Engine functions
+ *
+ * Most POC Engine functions return a result code to indicate success or failure.
+ * Use poc_result_to_string() to get a human-readable description of the error.
+ */
 typedef enum {
-    POC_RESULT_SUCCESS = 0,
-    POC_RESULT_ERROR_INIT_FAILED,
-    POC_RESULT_ERROR_DEVICE_NOT_FOUND,
-    POC_RESULT_ERROR_SURFACE_CREATION_FAILED,
-    POC_RESULT_ERROR_SWAPCHAIN_CREATION_FAILED,
-    POC_RESULT_ERROR_OUT_OF_MEMORY,
-    POC_RESULT_ERROR_SHADER_COMPILATION_FAILED,
-    POC_RESULT_ERROR_PIPELINE_CREATION_FAILED,
+    POC_RESULT_SUCCESS = 0,                         /**< Operation completed successfully */
+    POC_RESULT_ERROR_INIT_FAILED,                   /**< Engine initialization failed */
+    POC_RESULT_ERROR_DEVICE_NOT_FOUND,              /**< No suitable graphics device found */
+    POC_RESULT_ERROR_SURFACE_CREATION_FAILED,       /**< Failed to create rendering surface */
+    POC_RESULT_ERROR_SWAPCHAIN_CREATION_FAILED,     /**< Failed to create swapchain */
+    POC_RESULT_ERROR_OUT_OF_MEMORY,                 /**< Out of memory */
+    POC_RESULT_ERROR_SHADER_COMPILATION_FAILED,     /**< Shader compilation failed */
+    POC_RESULT_ERROR_PIPELINE_CREATION_FAILED,      /**< Graphics pipeline creation failed */
 } poc_result;
 
+/**
+ * @brief Configuration structure for engine initialization
+ *
+ * This structure contains all the settings needed to initialize the engine.
+ * All fields must be set before passing to poc_init().
+ */
 typedef struct {
-    poc_renderer_type renderer_type;
-    bool enable_validation;
-    const char *app_name;
-    uint32_t app_version;
+    poc_renderer_type renderer_type;    /**< Which graphics backend to use */
+    bool enable_validation;             /**< Enable validation layers (debug builds) */
+    const char *app_name;               /**< Application name (must not be NULL) */
+    uint32_t app_version;               /**< Application version number */
 } poc_config;
 
+/**
+ * @brief Initialize the POC Engine
+ *
+ * This must be called before any other POC Engine functions.
+ * Initializes the graphics backend and sets up the engine state.
+ *
+ * @param config Configuration structure containing engine settings.
+ *               Must not be NULL and all fields must be valid.
+ * @return POC_RESULT_SUCCESS on success, or an error code on failure
+ *
+ * @note Only one engine instance can be active at a time.
+ * @warning Must call poc_shutdown() before program exit to clean up resources.
+ */
 poc_result poc_init(const poc_config *config);
+
+/**
+ * @brief Shut down the POC Engine
+ *
+ * Destroys all engine resources and shuts down the graphics backend.
+ * Must be called after destroying all contexts but before program exit.
+ *
+ * @warning All contexts must be destroyed before calling this function.
+ * @note After calling this, poc_init() must be called again to use the engine.
+ */
 void poc_shutdown(void);
 
+/**
+ * @brief Create a rendering context for a window
+ *
+ * Creates a new rendering context tied to the specified window.
+ * Each window should have its own context for rendering.
+ *
+ * @param window The Podi window to create a context for. Must not be NULL
+ *               and must be a valid, open window.
+ * @return Pointer to the new context on success, or NULL on failure
+ *
+ * @note The window must remain valid for the lifetime of the context.
+ * @warning Must call poc_context_destroy() to free the context when done.
+ */
 poc_context *poc_context_create(podi_window *window);
+
+/**
+ * @brief Destroy a rendering context
+ *
+ * Destroys the specified rendering context and frees all associated resources.
+ *
+ * @param ctx The context to destroy. Can be NULL (no-op).
+ *
+ * @note After calling this, the context pointer becomes invalid.
+ */
 void poc_context_destroy(poc_context *ctx);
 
+/**
+ * @brief Begin a new frame for rendering
+ *
+ * Starts a new frame and prepares the context for rendering commands.
+ * Must be called before any rendering operations and paired with
+ * poc_context_end_frame().
+ *
+ * @param ctx The rendering context. Must not be NULL.
+ * @return POC_RESULT_SUCCESS on success, or an error code on failure
+ *
+ * @note Must be paired with poc_context_end_frame() to complete the frame.
+ * @warning Do not call this twice without calling poc_context_end_frame().
+ */
 poc_result poc_context_begin_frame(poc_context *ctx);
+
+/**
+ * @brief End the current frame and present it
+ *
+ * Completes the current frame and presents it to the screen.
+ * Must be called after poc_context_begin_frame() and all rendering commands.
+ *
+ * @param ctx The rendering context. Must not be NULL.
+ * @return POC_RESULT_SUCCESS on success, or an error code on failure
+ *
+ * @note Must be called after poc_context_begin_frame().
+ */
 poc_result poc_context_end_frame(poc_context *ctx);
 
+/**
+ * @brief Set the clear color for the next frame
+ *
+ * Sets the background color that will be used when clearing the screen
+ * during the next frame. The color persists until changed.
+ *
+ * @param ctx The rendering context. Must not be NULL.
+ * @param r Red component (0.0 to 1.0)
+ * @param g Green component (0.0 to 1.0)
+ * @param b Blue component (0.0 to 1.0)
+ * @param a Alpha component (0.0 to 1.0)
+ *
+ * @note Color values are clamped to the range [0.0, 1.0].
+ * @note Must be called between poc_context_begin_frame() and poc_context_end_frame().
+ */
 void poc_context_clear_color(poc_context *ctx, float r, float g, float b, float a);
 
-// Model loading and rendering
+/**
+ * @brief Load and render a 3D model from an OBJ file
+ *
+ * Loads a 3D model from the specified OBJ file and sets it up for rendering.
+ * Supports materials (MTL files), vertex normals, texture coordinates, and
+ * smoothing groups.
+ *
+ * @param ctx The rendering context. Must not be NULL.
+ * @param obj_filename Path to the OBJ file to load. Must not be NULL.
+ * @return POC_RESULT_SUCCESS on success, or an error code on failure
+ *
+ * @note The OBJ file should be in the same directory as any referenced MTL files.
+ * @note Currently only one model can be loaded per context.
+ * @warning File must be accessible and in valid OBJ format.
+ */
 poc_result poc_context_load_model(poc_context *ctx, const char *obj_filename);
 
+/**
+ * @brief Get a human-readable string for a result code
+ *
+ * Converts a poc_result error code into a descriptive string for logging
+ * or error reporting.
+ *
+ * @param result The result code to convert
+ * @return Pointer to a static string describing the result.
+ *         Never returns NULL.
+ *
+ * @note The returned string is static and should not be freed.
+ */
 const char *poc_result_to_string(poc_result result);
 
+/**
+ * @brief Get elapsed time since engine initialization
+ *
+ * Returns the number of seconds that have elapsed since poc_init() was called.
+ * Useful for animations and timing calculations.
+ *
+ * @return Elapsed time in seconds as a double-precision floating point value
+ *
+ * @note Resolution depends on the system clock, typically nanosecond precision.
+ * @warning Only valid after poc_init() has been called.
+ */
 double poc_get_time(void);
+
+/**
+ * @brief Sleep for the specified duration
+ *
+ * Suspends execution of the current thread for the specified number of seconds.
+ * Useful for frame rate limiting or simple delays.
+ *
+ * @param seconds Number of seconds to sleep (can be fractional)
+ *
+ * @note Actual sleep time may be slightly longer due to system scheduling.
+ * @note For frame rate limiting, consider using vertical sync instead.
+ */
 void poc_sleep(double seconds);
 
 #ifdef __cplusplus
