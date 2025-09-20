@@ -40,6 +40,7 @@ SRCDIR = src
 OBJDIR = obj
 EXAMPLEDIR = examples
 DEPSDIR = deps
+SHADERDIR = shaders
 
 PODI_REPO = https://github.com/slaide/podi.git
 PODI_DIR = $(DEPSDIR)/podi
@@ -54,13 +55,26 @@ OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
 EXAMPLE_SOURCES = $(wildcard $(EXAMPLEDIR)/*.c)
 EXAMPLE_TARGETS = $(EXAMPLE_SOURCES:$(EXAMPLEDIR)/%.c=$(EXAMPLEDIR)/%)
 
-.PHONY: all clean examples podi deps run
+SHADER_SOURCES = $(wildcard $(SHADERDIR)/*.vert $(SHADERDIR)/*.frag)
+SHADER_SPIRV = $(SHADER_SOURCES:%=%.spv)
 
-all: deps examples
+.PHONY: all clean examples podi deps run shaders
+
+all: deps shaders examples
 
 deps: podi
 
 podi: $(PODI_LIB)
+
+shaders: $(SHADER_SPIRV)
+
+%.vert.spv: %.vert
+	@echo "Compiling vertex shader $<"
+	@glslangValidator -V $< -o $@
+
+%.frag.spv: %.frag
+	@echo "Compiling fragment shader $<"
+	@glslangValidator -V $< -o $@
 
 $(PODI_LIB):
 	@echo "Setting up podi dependency..."
@@ -89,6 +103,7 @@ $(OBJDIR):
 clean:
 	rm -rf $(OBJDIR)
 	rm -f $(EXAMPLE_TARGETS)
+	rm -f $(SHADER_SPIRV)
 
 clean-all: clean
 	rm -rf $(DEPSDIR)

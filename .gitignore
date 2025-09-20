@@ -5,6 +5,9 @@ obj/
 *.dylib
 *.a
 
+# Compiled shaders
+*.spv
+
 # Example binaries
 examples/basic
 

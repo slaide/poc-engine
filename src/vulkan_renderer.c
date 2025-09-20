@@ -95,6 +95,15 @@ struct poc_context {
     bool needs_swapchain_recreation;
     uint32_t last_known_width;
     uint32_t last_known_height;
+
+    // Rendering pipeline
+    VkRenderPass render_pass;
+    VkPipelineLayout pipeline_layout;
+    VkPipeline graphics_pipeline;
+    VkFramebuffer *framebuffers;
+    uint32_t framebuffer_count;  // Track framebuffer count independently from swapchain
+    VkShaderModule vert_shader_module;
+    VkShaderModule frag_shader_module;
 };
 
 static vulkan_state g_vk_state = {0};
@@ -1002,6 +1011,57 @@ static void cleanup_swapchain_images(poc_context *ctx) {
     ctx->swapchain_image_count = 0;
 }
 
+static void cleanup_pipeline_dependent_resources(poc_context *ctx) {
+    if (!ctx || !g_vk_state.device) return;
+
+    // Ensure device is idle before cleanup
+    vkDeviceWaitIdle(g_vk_state.device);
+
+    // Destroy framebuffers (dependent on swapchain image views)
+    if (ctx->framebuffers) {
+        for (uint32_t i = 0; i < ctx->framebuffer_count; i++) {
+            if (ctx->framebuffers[i] != VK_NULL_HANDLE) {
+                vkDestroyFramebuffer(g_vk_state.device, ctx->framebuffers[i], NULL);
+                ctx->framebuffers[i] = VK_NULL_HANDLE;
+            }
+        }
+        free(ctx->framebuffers);
+        ctx->framebuffers = NULL;
+        ctx->framebuffer_count = 0;
+    }
+}
+
+static poc_result create_framebuffers(poc_context *ctx) {
+    // Ensure any existing framebuffers are cleaned up first
+    if (ctx->framebuffers) {
+        cleanup_pipeline_dependent_resources(ctx);
+    }
+
+    ctx->framebuffers = malloc(ctx->swapchain_image_count * sizeof(VkFramebuffer));
+
+    for (uint32_t i = 0; i < ctx->swapchain_image_count; i++) {
+        VkImageView attachments[] = {
+            ctx->swapchain_image_views[i]
+        };
+
+        VkFramebufferCreateInfo framebuffer_info = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = ctx->render_pass,
+            .attachmentCount = 1,
+            .pAttachments = attachments,
+            .width = ctx->swapchain_extent.width,
+            .height = ctx->swapchain_extent.height,
+            .layers = 1
+        };
+
+        VK_CHECK(vkCreateFramebuffer(g_vk_state.device, &framebuffer_info, NULL, &ctx->framebuffers[i]));
+    }
+
+    ctx->framebuffer_count = ctx->swapchain_image_count;
+    printf("✓ Framebuffers created (%u framebuffers)\n", ctx->framebuffer_count);
+    return POC_RESULT_SUCCESS;
+}
+
 static poc_result recreate_swapchain(poc_context *ctx) {
     printf("Recreating swapchain...\n");
 
@@ -1010,6 +1070,9 @@ static poc_result recreate_swapchain(poc_context *ctx) {
 
     // Clean up old swapchain resources
     cleanup_swapchain_images(ctx);
+
+    // Clean up pipeline dependent resources (framebuffers)
+    cleanup_pipeline_dependent_resources(ctx);
 
     VkSwapchainKHR old_swapchain = ctx->swapchain;
 
@@ -1020,6 +1083,13 @@ static poc_result recreate_swapchain(poc_context *ctx) {
     if (old_swapchain != VK_NULL_HANDLE) {
         vkDestroySwapchainKHR(g_vk_state.device, old_swapchain, NULL);
     }
+
+    if (result != POC_RESULT_SUCCESS) {
+        return result;
+    }
+
+    // Recreate framebuffers with new swapchain image views
+    result = create_framebuffers(ctx);
 
     return result;
 }
@@ -1082,6 +1152,243 @@ static poc_result create_sync_objects(poc_context *ctx) {
            ctx->swapchain_image_count, MAX_FRAMES_IN_FLIGHT);
     return POC_RESULT_SUCCESS;
 }
+
+static char *read_file(const char *filename, size_t *file_size) {
+    FILE *file = fopen(filename, "rb");
+    if (!file) {
+        printf("Failed to open file: %s\n", filename);
+        return NULL;
+    }
+
+    fseek(file, 0, SEEK_END);
+    *file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    char *buffer = malloc(*file_size);
+    if (!buffer) {
+        printf("Failed to allocate memory for file: %s\n", filename);
+        fclose(file);
+        return NULL;
+    }
+
+    size_t read_size = fread(buffer, 1, *file_size, file);
+    fclose(file);
+
+    if (read_size != *file_size) {
+        printf("Failed to read entire file: %s\n", filename);
+        free(buffer);
+        return NULL;
+    }
+
+    return buffer;
+}
+
+static VkShaderModule create_shader_module(const char *filename) {
+    size_t code_size;
+    char *code = read_file(filename, &code_size);
+    if (!code) {
+        return VK_NULL_HANDLE;
+    }
+
+    VkShaderModuleCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = code_size,
+        .pCode = (const uint32_t*)code
+    };
+
+    VkShaderModule shader_module;
+    VkResult result = vkCreateShaderModule(g_vk_state.device, &create_info, NULL, &shader_module);
+
+    free(code);
+
+    if (result != VK_SUCCESS) {
+        printf("Failed to create shader module from %s: %d\n", filename, result);
+        return VK_NULL_HANDLE;
+    }
+
+    printf("✓ Shader module created from %s\n", filename);
+    return shader_module;
+}
+
+static poc_result create_render_pass(poc_context *ctx) {
+    VkAttachmentDescription color_attachment = {
+        .format = ctx->swapchain_format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+    };
+
+    VkAttachmentReference color_attachment_ref = {
+        .attachment = 0,
+        .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+    };
+
+    VkSubpassDescription subpass = {
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_attachment_ref
+    };
+
+    VkSubpassDependency dependency = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = 0,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+    };
+
+    VkRenderPassCreateInfo render_pass_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &color_attachment,
+        .subpassCount = 1,
+        .pSubpasses = &subpass,
+        .dependencyCount = 1,
+        .pDependencies = &dependency
+    };
+
+    VK_CHECK(vkCreateRenderPass(g_vk_state.device, &render_pass_info, NULL, &ctx->render_pass));
+
+    printf("✓ Render pass created\n");
+    return POC_RESULT_SUCCESS;
+}
+
+static poc_result create_graphics_pipeline(poc_context *ctx) {
+    // Load shaders
+    ctx->vert_shader_module = create_shader_module("shaders/triangle.vert.spv");
+    ctx->frag_shader_module = create_shader_module("shaders/triangle.frag.spv");
+
+    if (ctx->vert_shader_module == VK_NULL_HANDLE || ctx->frag_shader_module == VK_NULL_HANDLE) {
+        printf("Failed to load shader modules\n");
+        return POC_RESULT_ERROR_SHADER_COMPILATION_FAILED;
+    }
+
+    VkPipelineShaderStageCreateInfo vert_shader_stage_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_VERTEX_BIT,
+        .module = ctx->vert_shader_module,
+        .pName = "main"
+    };
+
+    VkPipelineShaderStageCreateInfo frag_shader_stage_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .module = ctx->frag_shader_module,
+        .pName = "main"
+    };
+
+    VkPipelineShaderStageCreateInfo shader_stages[] = {vert_shader_stage_info, frag_shader_stage_info};
+
+    VkPipelineVertexInputStateCreateInfo vertex_input_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 0,
+        .pVertexBindingDescriptions = NULL,
+        .vertexAttributeDescriptionCount = 0,
+        .pVertexAttributeDescriptions = NULL
+    };
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = VK_FALSE
+    };
+
+    VkViewport viewport = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = (float)ctx->swapchain_extent.width,
+        .height = (float)ctx->swapchain_extent.height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f
+    };
+
+    VkRect2D scissor = {
+        .offset = {0, 0},
+        .extent = ctx->swapchain_extent
+    };
+
+    VkPipelineViewportStateCreateInfo viewport_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .pViewports = &viewport,
+        .scissorCount = 1,
+        .pScissors = &scissor
+    };
+
+    VkPipelineRasterizationStateCreateInfo rasterizer = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = VK_FALSE,
+        .rasterizerDiscardEnable = VK_FALSE,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .lineWidth = 1.0f,
+        .cullMode = VK_CULL_MODE_BACK_BIT,
+        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+        .depthBiasEnable = VK_FALSE
+    };
+
+    VkPipelineMultisampleStateCreateInfo multisampling = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .sampleShadingEnable = VK_FALSE,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT
+    };
+
+    VkPipelineColorBlendAttachmentState color_blend_attachment = {
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        .blendEnable = VK_FALSE
+    };
+
+    VkPipelineColorBlendStateCreateInfo color_blending = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .logicOpEnable = VK_FALSE,
+        .logicOp = VK_LOGIC_OP_COPY,
+        .attachmentCount = 1,
+        .pAttachments = &color_blend_attachment,
+        .blendConstants[0] = 0.0f,
+        .blendConstants[1] = 0.0f,
+        .blendConstants[2] = 0.0f,
+        .blendConstants[3] = 0.0f
+    };
+
+    VkPipelineLayoutCreateInfo pipeline_layout_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 0,
+        .pSetLayouts = NULL,
+        .pushConstantRangeCount = 0,
+        .pPushConstantRanges = NULL
+    };
+
+    VK_CHECK(vkCreatePipelineLayout(g_vk_state.device, &pipeline_layout_info, NULL, &ctx->pipeline_layout));
+
+    VkGraphicsPipelineCreateInfo pipeline_info = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = 2,
+        .pStages = shader_stages,
+        .pVertexInputState = &vertex_input_info,
+        .pInputAssemblyState = &input_assembly,
+        .pViewportState = &viewport_state,
+        .pRasterizationState = &rasterizer,
+        .pMultisampleState = &multisampling,
+        .pDepthStencilState = NULL,
+        .pColorBlendState = &color_blending,
+        .pDynamicState = NULL,
+        .layout = ctx->pipeline_layout,
+        .renderPass = ctx->render_pass,
+        .subpass = 0,
+        .basePipelineHandle = VK_NULL_HANDLE,
+        .basePipelineIndex = -1
+    };
+
+    VK_CHECK(vkCreateGraphicsPipelines(g_vk_state.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &ctx->graphics_pipeline));
+
+    printf("✓ Graphics pipeline created\n");
+    return POC_RESULT_SUCCESS;
+}
+
 
 poc_context *vulkan_context_create(podi_window *window) {
     if (!window) {
@@ -1174,6 +1481,30 @@ poc_context *vulkan_context_create(podi_window *window) {
         return NULL;
     }
 
+    // Create render pass
+    result = create_render_pass(ctx);
+    if (result != POC_RESULT_SUCCESS) {
+        vkDestroySurfaceKHR(g_vk_state.instance, surface, NULL);
+        free(ctx);
+        return NULL;
+    }
+
+    // Create graphics pipeline
+    result = create_graphics_pipeline(ctx);
+    if (result != POC_RESULT_SUCCESS) {
+        vkDestroySurfaceKHR(g_vk_state.instance, surface, NULL);
+        free(ctx);
+        return NULL;
+    }
+
+    // Create framebuffers
+    result = create_framebuffers(ctx);
+    if (result != POC_RESULT_SUCCESS) {
+        vkDestroySurfaceKHR(g_vk_state.instance, surface, NULL);
+        free(ctx);
+        return NULL;
+    }
+
     // Initialize current frame
     ctx->current_frame = 0;
 
@@ -1230,10 +1561,34 @@ void vulkan_context_destroy(poc_context *ctx) {
         free(ctx->command_buffers);
     }
 
+    // Destroy framebuffers first (dependent on swapchain image views)
+    cleanup_pipeline_dependent_resources(ctx);
+
     // Destroy swapchain
     cleanup_swapchain_images(ctx);
     if (ctx->swapchain != VK_NULL_HANDLE) {
         vkDestroySwapchainKHR(g_vk_state.device, ctx->swapchain, NULL);
+    }
+
+    // Destroy rendering pipeline resources (dependent on render pass)
+    if (ctx->graphics_pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_vk_state.device, ctx->graphics_pipeline, NULL);
+    }
+
+    if (ctx->pipeline_layout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(g_vk_state.device, ctx->pipeline_layout, NULL);
+    }
+
+    if (ctx->render_pass != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(g_vk_state.device, ctx->render_pass, NULL);
+    }
+
+    if (ctx->vert_shader_module != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(g_vk_state.device, ctx->vert_shader_module, NULL);
+    }
+
+    if (ctx->frag_shader_module != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(g_vk_state.device, ctx->frag_shader_module, NULL);
     }
 
     // Destroy surface
@@ -1316,54 +1671,29 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
 
     VK_CHECK(vkBeginCommandBuffer(ctx->command_buffers[image_index], &begin_info));
 
-    // Transition image layout for clearing
-    VkImageMemoryBarrier barrier = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = ctx->swapchain_images[image_index],
-        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .subresourceRange.baseMipLevel = 0,
-        .subresourceRange.levelCount = 1,
-        .subresourceRange.baseArrayLayer = 0,
-        .subresourceRange.layerCount = 1,
-        .srcAccessMask = 0,
-        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
+    // Begin render pass
+    VkClearValue clear_color = {{{ctx->clear_color[0], ctx->clear_color[1], ctx->clear_color[2], ctx->clear_color[3]}}};
+
+    VkRenderPassBeginInfo render_pass_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = ctx->render_pass,
+        .framebuffer = ctx->framebuffers[image_index],
+        .renderArea.offset = {0, 0},
+        .renderArea.extent = ctx->swapchain_extent,
+        .clearValueCount = 1,
+        .pClearValues = &clear_color
     };
 
-    vkCmdPipelineBarrier(ctx->command_buffers[image_index],
-                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         0, 0, NULL, 0, NULL, 1, &barrier);
+    vkCmdBeginRenderPass(ctx->command_buffers[image_index], &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
 
-    // Clear the image with pink color
-    VkClearColorValue clear_color = {
-        .float32 = {ctx->clear_color[0], ctx->clear_color[1], ctx->clear_color[2], ctx->clear_color[3]}
-    };
+    // Bind graphics pipeline
+    vkCmdBindPipeline(ctx->command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS, ctx->graphics_pipeline);
 
-    VkImageSubresourceRange range = {
-        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .baseMipLevel = 0,
-        .levelCount = 1,
-        .baseArrayLayer = 0,
-        .layerCount = 1
-    };
+    // Draw triangle (3 vertices, 1 instance, no vertex buffers needed as vertices are hardcoded in shader)
+    vkCmdDraw(ctx->command_buffers[image_index], 3, 1, 0, 0);
 
-    vkCmdClearColorImage(ctx->command_buffers[image_index], ctx->swapchain_images[image_index],
-                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range);
-
-    // Transition to present layout
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.dstAccessMask = 0;
-
-    vkCmdPipelineBarrier(ctx->command_buffers[image_index],
-                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                         0, 0, NULL, 0, NULL, 1, &barrier);
+    // End render pass
+    vkCmdEndRenderPass(ctx->command_buffers[image_index]);
 
     // End command buffer recording
     VK_CHECK(vkEndCommandBuffer(ctx->command_buffers[image_index]));
