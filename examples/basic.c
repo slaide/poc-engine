@@ -99,8 +99,6 @@ int my_main(podi_application *app) {
     printf("Running at %.0ffps, press ESC to exit\n", target_fps);
     printf("Showing two cubes with different materials and animations!\n");
     printf("Event logging enabled - all inputs will be shown\n");
-    printf("Press R/T/L to test interactive resize (bottom-right/top/left)\n");
-    printf("DEBUG: Ready to start main loop - 2 cubes should be created and positioned\n");
 
     // Print window and scaling information
     int actual_width, actual_height;
@@ -145,12 +143,6 @@ int my_main(podi_application *app) {
                            event.key.text ? event.key.text : "none");
                     if (event.key.key == PODI_KEY_ESCAPE) {
                         podi_window_close(window);
-                    } else if (event.key.key == PODI_KEY_R) {
-                        podi_window_begin_interactive_resize(window, PODI_RESIZE_EDGE_BOTTOM_RIGHT);
-                    } else if (event.key.key == PODI_KEY_T) {
-                        podi_window_begin_interactive_resize(window, PODI_RESIZE_EDGE_TOP);
-                    } else if (event.key.key == PODI_KEY_L) {
-                        podi_window_begin_interactive_resize(window, PODI_RESIZE_EDGE_LEFT);
                     }
                     break;
 

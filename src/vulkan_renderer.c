@@ -36,6 +36,13 @@ typedef struct {
 bool podi_window_get_x11_handles(podi_window *window, podi_x11_handles *handles);
 bool podi_window_get_wayland_handles(podi_window *window, podi_wayland_handles *handles);
 
+// Forward declarations for depth resource management
+static void cleanup_depth_resources(poc_context *ctx);
+static poc_result create_depth_resources(poc_context *ctx);
+
+// Title bar height constant (logical pixels) for client-side decorations
+#define PODI_TITLE_BAR_HEIGHT 40
+
 // Include Vulkan platform-specific headers after X11 types are defined
 #include <vulkan/vulkan_xlib.h>
 #include <vulkan/vulkan_wayland.h>
@@ -1006,7 +1013,7 @@ static VkExtent2D choose_swap_extent(const VkSurfaceCapabilitiesKHR *capabilitie
         return capabilities->currentExtent;
     } else {
         int width, height;
-        podi_window_get_surface_size(window, &width, &height);
+        podi_window_get_framebuffer_size(window, &width, &height);
 
         VkExtent2D actual_extent = {
             (uint32_t)width,
@@ -1200,6 +1207,9 @@ static poc_result recreate_swapchain(poc_context *ctx) {
     // Clean up pipeline dependent resources (framebuffers)
     cleanup_pipeline_dependent_resources(ctx);
 
+    // Clean up depth resources (they need to match new swapchain size)
+    cleanup_depth_resources(ctx);
+
     VkSwapchainKHR old_swapchain = ctx->swapchain;
 
     // Create new swapchain
@@ -1210,6 +1220,12 @@ static poc_result recreate_swapchain(poc_context *ctx) {
         vkDestroySwapchainKHR(g_vk_state.device, old_swapchain, NULL);
     }
 
+    if (result != POC_RESULT_SUCCESS) {
+        return result;
+    }
+
+    // Recreate depth resources with new swapchain size
+    result = create_depth_resources(ctx);
     if (result != POC_RESULT_SUCCESS) {
         return result;
     }
@@ -1797,6 +1813,21 @@ static poc_result create_index_buffer(poc_context *ctx, uint32_t *indices, uint3
     return POC_RESULT_SUCCESS;
 }
 
+static void cleanup_depth_resources(poc_context *ctx) {
+    if (ctx->depth_image_view != VK_NULL_HANDLE) {
+        vkDestroyImageView(g_vk_state.device, ctx->depth_image_view, NULL);
+        ctx->depth_image_view = VK_NULL_HANDLE;
+    }
+    if (ctx->depth_image != VK_NULL_HANDLE) {
+        vkDestroyImage(g_vk_state.device, ctx->depth_image, NULL);
+        ctx->depth_image = VK_NULL_HANDLE;
+    }
+    if (ctx->depth_image_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_vk_state.device, ctx->depth_image_memory, NULL);
+        ctx->depth_image_memory = VK_NULL_HANDLE;
+    }
+}
+
 static poc_result create_depth_resources(poc_context *ctx) {
     VkFormat depth_format = find_depth_format();
     if (depth_format == VK_FORMAT_UNDEFINED) {
@@ -1913,7 +1944,7 @@ poc_context *vulkan_context_create(podi_window *window) {
 
     // Initialize resize tracking using surface size (for swapchain)
     int initial_width, initial_height;
-    podi_window_get_surface_size(window, &initial_width, &initial_height);
+    podi_window_get_framebuffer_size(window, &initial_width, &initial_height);
     ctx->last_known_width = (uint32_t)initial_width;
     ctx->last_known_height = (uint32_t)initial_height;
     ctx->needs_swapchain_recreation = false;
@@ -2124,15 +2155,7 @@ void vulkan_context_destroy(poc_context *ctx) {
     }
 
     // Destroy depth resources
-    if (ctx->depth_image_view != VK_NULL_HANDLE) {
-        vkDestroyImageView(g_vk_state.device, ctx->depth_image_view, NULL);
-    }
-    if (ctx->depth_image != VK_NULL_HANDLE) {
-        vkDestroyImage(g_vk_state.device, ctx->depth_image, NULL);
-    }
-    if (ctx->depth_image_memory != VK_NULL_HANDLE) {
-        vkFreeMemory(g_vk_state.device, ctx->depth_image_memory, NULL);
-    }
+    cleanup_depth_resources(ctx);
 
     // Destroy rendering pipeline resources (dependent on render pass)
     if (ctx->graphics_pipeline != VK_NULL_HANDLE) {
@@ -2296,7 +2319,7 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
 
     // Check if window size has changed (using surface size for swapchain tracking)
     int current_width, current_height;
-    podi_window_get_surface_size(ctx->window, &current_width, &current_height);
+    podi_window_get_framebuffer_size(ctx->window, &current_width, &current_height);
 
     // Track size changes but only recreate when we're about to render
     if ((uint32_t)current_width != ctx->last_known_width ||
