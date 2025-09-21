@@ -46,6 +46,8 @@ POC Engine is a C23 graphics framework that provides a cross-platform abstractio
 
 - **Podi**: Cross-platform window management library (auto-cloned from https://github.com/slaide/podi.git)
 - **cglm**: Math library for graphics (in deps/cglm, auto-managed submodule)
+- **Lua 5.4**: Embedded scripting language (auto-cloned from https://github.com/lua/lua.git)
+- **Teal**: Type-safe Lua dialect compiler (single file in deps/teal/)
 - **Platform Libraries**:
   - Linux: Vulkan, X11, Wayland, xkbcommon
   - macOS: Cocoa, Metal, MetalKit frameworks
@@ -56,6 +58,7 @@ The Makefile automatically:
 - Detects platform and architecture
 - Sets appropriate compiler flags and platform defines
 - Clones and builds Podi dependency if needed
+- Builds Lua 5.4 as a static library
 - Links examples against the engine and platform libraries
 - Compiles GLSL shaders to SPIR-V using glslangValidator
 
@@ -65,8 +68,9 @@ The Makefile automatically:
 2. Engine source goes in `src/`
 3. Public headers in `include/`
 4. GLSL shaders go in `shaders/` directory (compiled automatically)
-5. Use `make run` for quick testing
-6. Use `PODI_LOCAL_DIR=/path/to/podi make` for local Podi development
+5. Lua/Teal scripts go in `scripts/` directory
+6. Use `make run` for quick testing
+7. Use `PODI_LOCAL_DIR=/path/to/podi make` for local Podi development
 
 ### Shader Development
 
@@ -74,6 +78,37 @@ The Makefile automatically:
 - Shaders are automatically compiled to SPIR-V during build using glslangValidator
 - Current implementation includes triangle and cube shaders for rendering
 - Shaders are loaded at runtime from the compiled `.spv` files
+
+### Scripting System
+
+POC Engine includes an embedded Lua 5.4 scripting system with optional Teal type checking:
+
+#### Lua/Teal Integration
+- **Lua Scripts**: Place `.lua` files in `scripts/` directory for immediate execution
+- **Teal Scripts**: Place `.tl` files in `scripts/` for type-safe scripting with compile-time checks
+- **Type Definitions**: `scripts/poc_engine.d.tl` provides full engine API types for Teal
+- **Examples**: See `scripts/examples/` for camera controllers and input handlers
+
+#### Available APIs
+- **Core Engine**: `POC.get_time()`, `POC.sleep(seconds)`
+- **Camera System**: Create and control FPS, orbit, and free cameras
+- **Input Processing**: Handle keyboard, mouse, and scroll events
+- **Math Utilities**: 3D vectors and matrices with cglm integration
+
+#### Camera Controllers
+- **FPS Camera** (`fps_camera.tl`): WASD movement with mouse look
+- **Orbit Camera** (`orbit_camera.tl`): Rotate around target with zoom
+- **Input Handler** (`input_handler.tl`): Centralized input management system
+
+#### Usage Example
+```lua
+-- Create an FPS camera
+local success = POC.camera_create_fps({x=0, y=2, z=5}, -90.0, 0.0, 16/9)
+if success then
+    POC.camera_set_fov(75.0)
+    POC.camera_update(delta_time)
+end
+```
 
 ### Important Implementation Notes
 

@@ -4,3 +4,9 @@
 [submodule "deps/podi"]
 	path = deps/podi
 	url = https://github.com/slaide/podi.git
+[submodule "deps/lua"]
+	path = deps/lua
+	url = https://github.com/lua/lua.git
+[submodule "deps/teal"]
+	path = deps/teal
+	url = https://github.com/teal-language/tl.git

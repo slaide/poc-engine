@@ -3,6 +3,7 @@
 #include "vulkan_renderer.h"
 #include "poc_engine.h"
 #include "obj_loader.h"
+#include "camera.h"
 #include <vulkan/vulkan.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -170,8 +171,8 @@ struct poc_context {
     VkDescriptorPool descriptor_pool;
     VkDescriptorSet *descriptor_sets;  // DEPRECATED - kept for fallback compatibility
 
-    // Camera/transformation data
-    float camera_rotation_y;
+    // Camera system
+    poc_camera *camera;
 
     // Model rendering support (DEPRECATED - use renderables instead)
     VkBuffer vertex_buffer;
@@ -2187,6 +2188,15 @@ void vulkan_context_destroy(poc_context *ctx) {
     printf("✓ Vulkan context destroyed\n");
 }
 
+void vulkan_context_set_camera(poc_context *ctx, poc_camera *camera) {
+    if (!ctx) {
+        printf("Warning: Cannot set camera on NULL context\n");
+        return;
+    }
+    ctx->camera = camera;
+    printf("✓ Camera set on Vulkan context\n");
+}
+
 static void update_renderable_uniform_buffer(poc_renderable *renderable) {
     if (!renderable || !renderable->uniform_buffer_mapped) {
         return;
@@ -2200,16 +2210,27 @@ static void update_renderable_uniform_buffer(poc_renderable *renderable) {
     // Model matrix from renderable
     memcpy(ubo.model, renderable->model_matrix, sizeof(mat4));
 
-    // View matrix - camera looking at the cubes from further back
-    vec3 eye = {0.0f, 2.0f, 6.0f};  // Moved camera back to z=6 and centered on x
-    vec3 center = {0.0f, 0.0f, 0.0f};
-    vec3 up = {0.0f, 1.0f, 0.0f};
-    glm_lookat(eye, center, up, ubo.view);
-
-    // Projection matrix
+    // View and projection matrices from camera
     poc_context *ctx = renderable->ctx;
-    float aspect_ratio = (float)ctx->swapchain_extent.width / (float)ctx->swapchain_extent.height;
-    glm_perspective(glm_rad(45.0f), aspect_ratio, 0.1f, 10.0f, ubo.proj);
+    if (ctx->camera) {
+        // Update camera matrices if dirty
+        if (ctx->camera->matrices_dirty) {
+            poc_camera_update_matrices(ctx->camera);
+        }
+
+        // Use camera matrices
+        memcpy(ubo.view, ctx->camera->view_matrix, sizeof(mat4));
+        memcpy(ubo.proj, ctx->camera->projection_matrix, sizeof(mat4));
+    } else {
+        // Fallback to hardcoded camera if no camera is set
+        vec3 eye = {0.0f, 2.0f, 6.0f};
+        vec3 center = {0.0f, 0.0f, 0.0f};
+        vec3 up = {0.0f, 1.0f, 0.0f};
+        glm_lookat(eye, center, up, ubo.view);
+
+        float aspect_ratio = (float)ctx->swapchain_extent.width / (float)ctx->swapchain_extent.height;
+        glm_perspective(glm_rad(45.0f), aspect_ratio, 0.1f, 10.0f, ubo.proj);
+    }
 
     // GLM was originally designed for OpenGL, where the Y coordinate of the clip coordinates is inverted
     // Since we're using Vulkan, we need to flip the Y coordinate of the projection matrix
@@ -2246,9 +2267,17 @@ static void update_renderable_uniform_buffer(poc_renderable *renderable) {
     ubo.light_pos[0] = 2.0f;
     ubo.light_pos[1] = 4.0f;
     ubo.light_pos[2] = 2.0f;
-    ubo.view_pos[0] = eye[0];
-    ubo.view_pos[1] = eye[1];
-    ubo.view_pos[2] = eye[2];
+
+    // Set view position from camera or fallback
+    if (ctx->camera) {
+        ubo.view_pos[0] = ctx->camera->position[0];
+        ubo.view_pos[1] = ctx->camera->position[1];
+        ubo.view_pos[2] = ctx->camera->position[2];
+    } else {
+        ubo.view_pos[0] = 0.0f;
+        ubo.view_pos[1] = 2.0f;
+        ubo.view_pos[2] = 6.0f;
+    }
 
     // Copy data to this renderable's uniform buffer
     memcpy(renderable->uniform_buffer_mapped, &ubo, sizeof(ubo));

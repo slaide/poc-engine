@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -std=c23 -Wall -Wextra -Werror -Iinclude -Ideps/podi/include -Ideps/cglm/include
+CFLAGS = -std=c23 -Wall -Wextra -Werror -Iinclude -Ideps/podi/include -Ideps/cglm/include -Ideps/lua
 LDFLAGS =
 
 UNAME_S := $(shell uname -s)
@@ -45,6 +45,9 @@ SHADERDIR = shaders
 PODI_DIR = $(DEPSDIR)/podi
 PODI_LIB = $(PODI_DIR)/lib/libpodi$(shell if [ "$(UNAME_S)" = "Darwin" ]; then echo ".dylib"; else echo ".so"; fi)
 
+LUA_DIR = $(DEPSDIR)/lua
+LUA_LIB = $(LUA_DIR)/liblua.a
+
 SOURCES = $(wildcard $(SRCDIR)/*.c)
 OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
 
@@ -54,17 +57,19 @@ EXAMPLE_TARGETS = $(EXAMPLE_SOURCES:$(EXAMPLEDIR)/%.c=$(EXAMPLEDIR)/%)
 SHADER_SOURCES = $(wildcard $(SHADERDIR)/*.vert $(SHADERDIR)/*.frag)
 SHADER_SPIRV = $(SHADER_SOURCES:%=%.spv)
 
-.PHONY: all clean examples podi deps run shaders submodules
+.PHONY: all clean examples podi lua deps run shaders submodules
 
 all: deps shaders examples
 
-deps: submodules podi
+deps: submodules podi lua
 
 submodules:
 	@echo "Updating git submodules..."
 	@git submodule update --init --recursive
 
 podi: $(PODI_LIB)
+
+lua: $(LUA_LIB)
 
 shaders: $(SHADER_SPIRV)
 
@@ -84,10 +89,18 @@ $(PODI_LIB):
 	fi
 	@cd $(PODI_DIR) && $(MAKE)
 
+$(LUA_LIB):
+	@echo "Building Lua dependency..."
+	@if [ ! -d "$(LUA_DIR)" ]; then \
+		echo "Error: lua submodule not found. Run 'git submodule update --init --recursive'"; \
+		exit 1; \
+	fi
+	@cd $(LUA_DIR) && $(MAKE) liblua.a CC="$(CC)" CFLAGS="-std=c23 -O2 -Wall -Wextra -DLUA_COMPAT_5_3"
+
 examples: $(EXAMPLE_TARGETS)
 
-$(EXAMPLEDIR)/%: $(EXAMPLEDIR)/%.c $(OBJECTS) $(PODI_LIB) | $(OBJDIR)
-	$(CC) $(CFLAGS) $< $(OBJECTS) -L$(PODI_DIR)/lib -lpodi $(PLATFORM_LIBS) -o $@
+$(EXAMPLEDIR)/%: $(EXAMPLEDIR)/%.c $(OBJECTS) $(PODI_LIB) $(LUA_LIB) | $(OBJDIR)
+	$(CC) $(CFLAGS) $< $(OBJECTS) -L$(PODI_DIR)/lib -lpodi $(LUA_LIB) $(PLATFORM_LIBS) -o $@
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@

@@ -4,6 +4,7 @@
 #include <math.h>
 
 #include "poc_engine.h"
+#include "../src/scripting.h"
 
 int my_main(podi_application *app) {
     poc_config config = (poc_config){
@@ -47,6 +48,36 @@ int my_main(podi_application *app) {
         podi_window_destroy(window);
         poc_shutdown();
         return -1;
+    }
+
+    // Initialize scripting system
+    poc_script_config script_config = {
+        .enable_teal_checking = false,
+        .enable_debug_info = true,
+        .script_path = "scripts/examples"
+    };
+
+    poc_scripting *scripting = poc_scripting_init(&script_config);
+    if (!scripting) {
+        printf("Failed to initialize scripting system\n");
+        poc_context_destroy(ctx);
+        podi_window_destroy(window);
+        poc_shutdown();
+        return -1;
+    }
+
+    // Set the context for camera binding and window for application control
+    poc_scripting_set_context(ctx);
+    poc_scripting_set_window(window);
+
+
+    // Load and run the FPS camera controller script
+    poc_script_result script_result = poc_scripting_load_file(scripting, "fps_camera_controller.lua");
+    if (script_result != POC_SCRIPT_SUCCESS) {
+        printf("Failed to load FPS camera controller: %s\n", poc_scripting_get_last_error(scripting));
+        printf("Continuing without camera script...\n");
+    } else {
+        printf("✓ FPS camera controller loaded successfully\n");
     }
 
     // Create two renderable objects
@@ -141,25 +172,34 @@ int my_main(podi_application *app) {
                            podi_get_key_name(event.key.key), event.key.key, event.key.native_keycode,
                            podi_get_modifiers_string(event.key.modifiers),
                            event.key.text ? event.key.text : "none");
-                    if (event.key.key == PODI_KEY_ESCAPE) {
-                        podi_window_close(window);
-                    }
+                    // Forward key event to camera controller
+                    poc_scripting_call_function(scripting, "process_keyboard", "ib",
+                                               (int)event.key.key, 1);
                     break;
 
                 case PODI_EVENT_KEY_UP:
                     printf("KEY_UP: %s (id=%d, code=%u, mods=%s)\n",
                            podi_get_key_name(event.key.key), event.key.key, event.key.native_keycode,
                            podi_get_modifiers_string(event.key.modifiers));
+                    // Forward key event to camera controller
+                    poc_scripting_call_function(scripting, "process_keyboard", "ib",
+                                               (int)event.key.key, 0);
                     break;
 
                 case PODI_EVENT_MOUSE_BUTTON_DOWN:
                     printf("MOUSE_DOWN: %s (id=%d)\n",
                            podi_get_mouse_button_name(event.mouse_button.button), event.mouse_button.button);
+                    // Forward mouse button event to camera controller
+                    poc_scripting_call_function(scripting, "process_mouse_button", "ii",
+                                               (int)event.mouse_button.button, 1);
                     break;
 
                 case PODI_EVENT_MOUSE_BUTTON_UP:
                     printf("MOUSE_UP: %s (id=%d)\n",
                            podi_get_mouse_button_name(event.mouse_button.button), event.mouse_button.button);
+                    // Forward mouse button event to camera controller
+                    poc_scripting_call_function(scripting, "process_mouse_button", "ii",
+                                               (int)event.mouse_button.button, 0);
                     break;
 
                 case PODI_EVENT_MOUSE_MOVE:
@@ -168,10 +208,16 @@ int my_main(podi_application *app) {
                     if (++mouse_move_counter % 20 == 0) {
                         printf("MOUSE_MOVE: (%.1f, %.1f)\n", event.mouse_move.x, event.mouse_move.y);
                     }
+                    // Forward mouse movement to camera controller
+                    poc_scripting_call_function(scripting, "process_mouse_movement", "dd",
+                                               event.mouse_move.x, event.mouse_move.y);
                     break;
 
                 case PODI_EVENT_MOUSE_SCROLL:
                     printf("MOUSE_SCROLL: (%.2f, %.2f)\n", event.mouse_scroll.x, event.mouse_scroll.y);
+                    // Forward scroll to camera controller
+                    poc_scripting_call_function(scripting, "process_mouse_scroll", "d",
+                                               event.mouse_scroll.y);
                     break;
 
                 case PODI_EVENT_WINDOW_RESIZE:
@@ -216,6 +262,10 @@ int my_main(podi_application *app) {
             poc_sleep(remaining_frame_time);
         }
 
+        // Update camera controller with delta time
+        double delta_time = target_frame_time;
+        poc_scripting_call_function(scripting, "update", "d", delta_time);
+
         color_time += (float)target_frame_time;
         float r = (sinf(color_time) + 1.0f) * 0.5f;
         float g = (sinf(color_time + 2.0f) + 1.0f) * 0.5f;
@@ -254,6 +304,7 @@ int my_main(podi_application *app) {
         frame_count++;
     }
 
+    poc_scripting_shutdown(scripting);
     poc_context_destroy(ctx);
     podi_window_destroy(window);
     poc_shutdown();

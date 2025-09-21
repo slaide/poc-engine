@@ -17,6 +17,7 @@
 
 #include "poc_engine.h"
 #include "obj_loader.h"
+#include "camera.h"
 
 #ifdef POC_PLATFORM_LINUX
 
@@ -139,5 +140,18 @@ poc_result vulkan_context_load_model(poc_context *ctx, const char *obj_filename)
  * @note This is an internal function used by vulkan_context_load_model().
  */
 poc_result vulkan_context_set_vertex_data(poc_context *ctx, poc_vertex *vertices, uint32_t vertex_count, uint32_t *indices, uint32_t index_count);
+
+/**
+ * @brief Set the camera for a Vulkan rendering context
+ *
+ * Internal function that assigns a camera to the specified context.
+ * The camera's matrices will be used for rendering instead of hardcoded values.
+ *
+ * @param ctx The rendering context
+ * @param camera The camera to assign (can be NULL to remove camera)
+ *
+ * @note This is an internal function - use poc_context_set_camera() instead.
+ */
+void vulkan_context_set_camera(poc_context *ctx, poc_camera *camera);
 
 #endif

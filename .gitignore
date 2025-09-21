@@ -11,10 +11,8 @@ obj/
 # Example binaries
 examples/basic
 
-# Dependencies
-deps/*
-!deps/cglm/
-!deps/podi/
+# Scripts (keep all scripts in version control)
+# scripts/ is intentionally not ignored
 
 # Debug files
 *.dSYM/
