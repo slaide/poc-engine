@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <math.h>
 #include <cglm/cglm.h>
+#include "../deps/podi/src/internal.h"
 
 // Forward declare X11 types to avoid including X11 headers
 typedef struct _Display Display;
@@ -1005,7 +1006,7 @@ static VkExtent2D choose_swap_extent(const VkSurfaceCapabilitiesKHR *capabilitie
         return capabilities->currentExtent;
     } else {
         int width, height;
-        podi_window_get_framebuffer_size(window, &width, &height);
+        podi_window_get_surface_size(window, &width, &height);
 
         VkExtent2D actual_extent = {
             (uint32_t)width,
@@ -1105,6 +1106,7 @@ static poc_result create_swapchain_internal(poc_context *ctx, VkSwapchainKHR old
     printf("  Format: %s (%d)\n", get_format_string(ctx->swapchain_format), ctx->swapchain_format);
     printf("  Colorspace: %s (%d)\n", get_colorspace_string(ctx->swapchain_colorspace), ctx->swapchain_colorspace);
     printf("  Extent: %ux%u\n", ctx->swapchain_extent.width, ctx->swapchain_extent.height);
+    printf("*** SIZE CHECK: Expected 1600x1260, got %ux%u ***\n", ctx->swapchain_extent.width, ctx->swapchain_extent.height);
     printf("  Image count: %u\n", ctx->swapchain_image_count);
     printf("  Present mode: %s (%d)\n", get_present_mode_string(present_mode), present_mode);
 
@@ -1909,9 +1911,9 @@ poc_context *vulkan_context_create(podi_window *window) {
     }
     ctx->renderable_count = 0;
 
-    // Initialize resize tracking
+    // Initialize resize tracking using surface size (for swapchain)
     int initial_width, initial_height;
-    podi_window_get_framebuffer_size(window, &initial_width, &initial_height);
+    podi_window_get_surface_size(window, &initial_width, &initial_height);
     ctx->last_known_width = (uint32_t)initial_width;
     ctx->last_known_height = (uint32_t)initial_height;
     ctx->needs_swapchain_recreation = false;
@@ -2231,14 +2233,70 @@ static void update_renderable_uniform_buffer(poc_renderable *renderable) {
 
 // DEPRECATED: update_uniform_buffer function removed - uniform buffers are now updated per-renderable
 
+#ifdef POC_PLATFORM_LINUX
+// Helper function to check if window needs client-side decorations (Linux Wayland only)
+static bool needs_client_decorations(podi_window *window) {
+    (void)window;  // Unused for now
+    // On Linux, check if we're running on Wayland without server decorations
+    if (podi_get_backend() == PODI_BACKEND_WAYLAND) {
+        // For now, always assume we need client decorations on Wayland
+        // since GNOME doesn't support server-side decorations
+        return true;
+    }
+    return false;
+}
+#endif
+
+static void render_title_bar_if_needed(poc_context *ctx, uint32_t image_index) {
+#ifdef POC_PLATFORM_LINUX
+    // Only render title bar on Linux Wayland without server decorations
+    if (!needs_client_decorations(ctx->window)) {
+        return;
+    }
+
+    // Get the scale factor to properly size the title bar
+    float scale_factor = podi_window_get_scale_factor(ctx->window);
+    uint32_t scaled_title_bar_height = (uint32_t)(PODI_TITLE_BAR_HEIGHT * scale_factor);
+
+    // The entire framebuffer was cleared to black in begin_frame
+    // Now clear just the content area to the original pink color
+    VkRect2D content_scissor = {
+        .offset = {0, (int32_t)scaled_title_bar_height},
+        .extent = {ctx->swapchain_extent.width, ctx->swapchain_extent.height - scaled_title_bar_height}
+    };
+    vkCmdSetScissor(ctx->command_buffers[image_index], 0, 1, &content_scissor);
+
+    // Clear the content area to the original background color (pink)
+    VkClearAttachment clear_attachment = {
+        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .colorAttachment = 0,
+        .clearValue.color = {{ctx->clear_color[0], ctx->clear_color[1], ctx->clear_color[2], ctx->clear_color[3]}}
+    };
+
+    VkClearRect clear_rect = {
+        .rect.offset = {0, (int32_t)scaled_title_bar_height},
+        .rect.extent = {ctx->swapchain_extent.width, ctx->swapchain_extent.height - scaled_title_bar_height},
+        .baseArrayLayer = 0,
+        .layerCount = 1
+    };
+
+    vkCmdClearAttachments(ctx->command_buffers[image_index], 1, &clear_attachment, 1, &clear_rect);
+
+    // Keep the scissor set to content area for 3D rendering
+#else
+    (void)ctx;  // Unused on other platforms
+    (void)image_index;
+#endif
+}
+
 poc_result vulkan_context_begin_frame(poc_context *ctx) {
     if (!ctx) {
         return POC_RESULT_ERROR_INIT_FAILED;
     }
 
-    // Check if window size has changed
+    // Check if window size has changed (using surface size for swapchain tracking)
     int current_width, current_height;
-    podi_window_get_framebuffer_size(ctx->window, &current_width, &current_height);
+    podi_window_get_surface_size(ctx->window, &current_width, &current_height);
 
     // Track size changes but only recreate when we're about to render
     if ((uint32_t)current_width != ctx->last_known_width ||
@@ -2302,11 +2360,20 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
 
     VK_CHECK(vkBeginCommandBuffer(ctx->command_buffers[image_index], &begin_info));
 
-    // Begin render pass
-    VkClearValue clear_values[2] = {
-        [0] = {.color = {{ctx->clear_color[0], ctx->clear_color[1], ctx->clear_color[2], ctx->clear_color[3]}}},
-        [1] = {.depthStencil = {1.0f, 0}}
-    };
+    // Begin render pass - clear to black if we need title bars, otherwise use normal clear color
+    VkClearValue clear_values[2];
+
+#ifdef POC_PLATFORM_LINUX
+    if (needs_client_decorations(ctx->window)) {
+        // Clear entire framebuffer to black first, then we'll draw the pink content area
+        clear_values[0] = (VkClearValue){.color = {{0.0f, 0.0f, 0.0f, 1.0f}}};
+    } else {
+        clear_values[0] = (VkClearValue){.color = {{ctx->clear_color[0], ctx->clear_color[1], ctx->clear_color[2], ctx->clear_color[3]}}};
+    }
+#else
+    clear_values[0] = (VkClearValue){.color = {{ctx->clear_color[0], ctx->clear_color[1], ctx->clear_color[2], ctx->clear_color[3]}}};
+#endif
+    clear_values[1] = (VkClearValue){.depthStencil = {1.0f, 0}};
 
     VkRenderPassBeginInfo render_pass_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -2323,23 +2390,49 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
     // Bind graphics pipeline
     vkCmdBindPipeline(ctx->command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS, ctx->graphics_pipeline);
 
-    // Set dynamic viewport
+    // Render title bar if needed (client-side decorations) - after pipeline binding
+    render_title_bar_if_needed(ctx, image_index);
+
+    // Set dynamic viewport - adjust for title bar if needed
+    float viewport_y = 0.0f;
+    float viewport_height = (float)ctx->swapchain_extent.height;
+    VkOffset2D scissor_offset = {0, 0};
+    VkExtent2D scissor_extent = ctx->swapchain_extent;
+
+#ifdef POC_PLATFORM_LINUX
+    if (needs_client_decorations(ctx->window)) {
+        float scale_factor = podi_window_get_scale_factor(ctx->window);
+        uint32_t scaled_title_bar_height = (uint32_t)(PODI_TITLE_BAR_HEIGHT * scale_factor);
+
+        viewport_y = (float)scaled_title_bar_height;
+        viewport_height = (float)ctx->swapchain_extent.height - (float)scaled_title_bar_height;
+        scissor_offset.y = scaled_title_bar_height;
+        scissor_extent.height = ctx->swapchain_extent.height - scaled_title_bar_height;
+    }
+#endif
+
     VkViewport viewport = {
         .x = 0.0f,
-        .y = 0.0f,
+        .y = viewport_y,
         .width = (float)ctx->swapchain_extent.width,
-        .height = (float)ctx->swapchain_extent.height,
+        .height = viewport_height,
         .minDepth = 0.0f,
         .maxDepth = 1.0f
     };
     vkCmdSetViewport(ctx->command_buffers[image_index], 0, 1, &viewport);
 
-    // Set dynamic scissor
-    VkRect2D scissor = {
-        .offset = {0, 0},
-        .extent = ctx->swapchain_extent
-    };
-    vkCmdSetScissor(ctx->command_buffers[image_index], 0, 1, &scissor);
+    // Set dynamic scissor (unless already set by title bar rendering)
+#ifdef POC_PLATFORM_LINUX
+    if (!needs_client_decorations(ctx->window)) {
+#endif
+        VkRect2D scissor = {
+            .offset = scissor_offset,
+            .extent = scissor_extent
+        };
+        vkCmdSetScissor(ctx->command_buffers[image_index], 0, 1, &scissor);
+#ifdef POC_PLATFORM_LINUX
+    }
+#endif
 
     // Render all renderables
     if (ctx->renderable_count > 0) {
