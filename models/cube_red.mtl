@@ -1,15 +1,15 @@
-# Cube Material
-# Created for POC Engine
+# Red Cube Material
+# Created for POC Engine - Multi-renderable demo
 
-newmtl CubeMaterial
-# Ambient color (Ka) - warmer gold ambient
-Ka 0.3 0.25 0.1
-# Diffuse color (Kd) - main surface color - rich gold
-Kd 1.0 0.8 0.2
-# Specular color (Ks)
+newmtl RedCubeMaterial
+# Ambient color (Ka) - dark red
+Ka 0.4 0.05 0.05
+# Diffuse color (Kd) - vibrant red
+Kd 1.0 0.1 0.1
+# Specular color (Ks) - white highlights
 Ks 1.0 1.0 1.0
 # Specular exponent (Ns) - shininess
-Ns 32.0
+Ns 64.0
 # Optical density/Index of refraction (Ni)
 Ni 1.0
 # Transparency (d) - 1.0 = opaque, 0.0 = transparent

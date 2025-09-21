@@ -1,0 +1,64 @@
+# Red Cube Model
+# Created for POC Engine
+mtllib cube_red.mtl
+
+# Vertices
+v -0.5 -0.5  0.5  # front bottom left
+v  0.5 -0.5  0.5  # front bottom right
+v  0.5  0.5  0.5  # front top right
+v -0.5  0.5  0.5  # front top left
+v -0.5 -0.5 -0.5  # back bottom left
+v  0.5 -0.5 -0.5  # back bottom right
+v  0.5  0.5 -0.5  # back top right
+v -0.5  0.5 -0.5  # back top left
+
+# Texture coordinates
+vt 0.0 0.0
+vt 1.0 0.0
+vt 1.0 1.0
+vt 0.0 1.0
+
+# Vertex normals
+vn  0.0  0.0  1.0  # front face normal
+vn  0.0  0.0 -1.0  # back face normal
+vn -1.0  0.0  0.0  # left face normal
+vn  1.0  0.0  0.0  # right face normal
+vn  0.0  1.0  0.0  # top face normal
+vn  0.0 -1.0  0.0  # bottom face normal
+
+# Object and material
+o Cube
+usemtl RedCubeMaterial
+
+# Default group for maintaining structure
+g default
+
+# Front face
+s 1
+f 1/1/1 2/2/1 3/3/1
+f 1/1/1 3/3/1 4/4/1
+
+# Back face
+s 2
+f 6/1/2 5/2/2 8/3/2
+f 6/1/2 8/3/2 7/4/2
+
+# Left face
+s 3
+f 5/1/3 1/2/3 4/3/3
+f 5/1/3 4/3/3 8/4/3
+
+# Right face
+s 4
+f 2/1/4 6/2/4 7/3/4
+f 2/1/4 7/3/4 3/4/4
+
+# Top face
+s 5
+f 4/1/5 3/2/5 7/3/5
+f 4/1/5 7/3/5 8/4/5
+
+# Bottom face
+s 6
+f 5/1/6 6/2/6 2/3/6
+f 5/1/6 2/3/6 1/4/6

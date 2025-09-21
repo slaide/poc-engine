@@ -49,21 +49,58 @@ int my_main(podi_application *app) {
         return -1;
     }
 
-    // Load the cube model
-    result = poc_context_load_model(ctx, "models/cube.obj");
+    // Create two renderable objects
+    poc_renderable *cube1 = poc_context_create_renderable(ctx, "GoldenCube");
+    poc_renderable *cube2 = poc_context_create_renderable(ctx, "RedCube");
+
+    if (!cube1 || !cube2) {
+        printf("Failed to create renderable objects\n");
+        poc_context_destroy(ctx);
+        podi_window_destroy(window);
+        poc_shutdown();
+        return -1;
+    }
+
+    // Load models into renderables
+    result = poc_renderable_load_model(cube1, "models/cube.obj");
     if (result != POC_RESULT_SUCCESS) {
         printf("Failed to load cube model: %s\n", poc_result_to_string(result));
         printf("Falling back to hardcoded cube\n");
     } else {
-        printf("✓ Cube model loaded successfully\n");
+        printf("✓ Golden cube model loaded successfully\n");
     }
+
+    result = poc_renderable_load_model(cube2, "models/cube_red.obj");
+    if (result != POC_RESULT_SUCCESS) {
+        printf("Failed to load red cube model: %s\n", poc_result_to_string(result));
+        printf("Using golden cube for both\n");
+    } else {
+        printf("✓ Red cube model loaded successfully\n");
+    }
+
+    // Set different positions for the cubes
+    mat4 transform1, transform2;
+    glm_mat4_identity(transform1);
+    glm_mat4_identity(transform2);
+
+    // Position first cube to the left
+    glm_translate(transform1, (vec3){-1.5f, 0.0f, 0.0f});
+    poc_renderable_set_transform(cube1, transform1);
+
+    // Position second cube to the right
+    glm_translate(transform2, (vec3){1.5f, 0.0f, 0.0f});
+    poc_renderable_set_transform(cube2, transform2);
+
+    printf("✓ Both cubes positioned: Golden cube at (-1.5, 0, 0), Red cube at (1.5, 0, 0)\n");
 
     const double target_fps = 120.0;
 
     printf("POC Engine basic example running...\n");
     printf("Running at %.0ffps, press ESC to exit\n", target_fps);
+    printf("Showing two cubes with different materials and animations!\n");
     printf("Event logging enabled - all inputs will be shown\n");
     printf("Press R/T/L to test interactive resize (bottom-right/top/left)\n");
+    printf("DEBUG: Ready to start main loop - 2 cubes should be created and positioned\n");
 
     // Print window and scaling information
     int actual_width, actual_height;
@@ -191,6 +228,22 @@ int my_main(podi_application *app) {
         float r = (sinf(color_time) + 1.0f) * 0.5f;
         float g = (sinf(color_time + 2.0f) + 1.0f) * 0.5f;
         float b = (sinf(color_time + 4.0f) + 1.0f) * 0.5f;
+
+        // Animate the cubes with different rotations
+        mat4 anim_transform1, anim_transform2;
+        glm_mat4_identity(anim_transform1);
+        glm_mat4_identity(anim_transform2);
+
+        // First cube: translate further left, rotate around Y axis
+        glm_translate(anim_transform1, (vec3){-2.5f, 0.0f, 0.0f});
+        glm_rotate(anim_transform1, color_time * 1.0f, (vec3){0.0f, 1.0f, 0.0f});
+        poc_renderable_set_transform(cube1, anim_transform1);
+
+        // Second cube: translate further right, rotate around X and Z axes
+        glm_translate(anim_transform2, (vec3){2.5f, 0.0f, 0.0f});
+        glm_rotate(anim_transform2, color_time * 0.7f, (vec3){1.0f, 0.0f, 0.0f});
+        glm_rotate(anim_transform2, color_time * 0.5f, (vec3){0.0f, 0.0f, 1.0f});
+        poc_renderable_set_transform(cube2, anim_transform2);
 
         result = poc_context_begin_frame(ctx);
         if (result == POC_RESULT_SUCCESS) {

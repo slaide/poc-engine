@@ -41,6 +41,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <cglm/cglm.h>
 #include <podi.h>
 
 #ifdef __cplusplus
@@ -62,6 +63,15 @@ typedef struct poc_context poc_context;
  * implementation (Vulkan, Metal, etc.).
  */
 typedef struct poc_renderer poc_renderer;
+
+/**
+ * @brief Opaque handle to a renderable object
+ *
+ * A renderable object encapsulates all data needed to render a 3D model,
+ * including geometry, material properties, and transformation matrix.
+ * Multiple renderables can exist within a single context.
+ */
+typedef struct poc_renderable poc_renderable;
 
 /**
  * @brief Graphics renderer backend types
@@ -204,7 +214,7 @@ poc_result poc_context_end_frame(poc_context *ctx);
 void poc_context_clear_color(poc_context *ctx, float r, float g, float b, float a);
 
 /**
- * @brief Load and render a 3D model from an OBJ file
+ * @brief Load and render a 3D model from an OBJ file (DEPRECATED)
  *
  * Loads a 3D model from the specified OBJ file and sets it up for rendering.
  * Supports materials (MTL files), vertex normals, texture coordinates, and
@@ -217,8 +227,68 @@ void poc_context_clear_color(poc_context *ctx, float r, float g, float b, float 
  * @note The OBJ file should be in the same directory as any referenced MTL files.
  * @note Currently only one model can be loaded per context.
  * @warning File must be accessible and in valid OBJ format.
+ * @deprecated Use poc_context_create_renderable() and poc_renderable_load_model() instead.
  */
 poc_result poc_context_load_model(poc_context *ctx, const char *obj_filename);
+
+/**
+ * @brief Create a new renderable object
+ *
+ * Creates a new renderable object that can hold geometry, material properties,
+ * and transformation data. The object is owned by the context and will be
+ * automatically destroyed when the context is destroyed.
+ *
+ * @param ctx The rendering context. Must not be NULL.
+ * @param name Optional name for the renderable (for debugging). Can be NULL.
+ * @return Pointer to the new renderable on success, or NULL on failure
+ *
+ * @note The renderable is initially empty and must be loaded with a model.
+ * @warning The renderable becomes invalid when the context is destroyed.
+ */
+poc_renderable *poc_context_create_renderable(poc_context *ctx, const char *name);
+
+/**
+ * @brief Destroy a renderable object
+ *
+ * Destroys the specified renderable object and frees all associated GPU resources.
+ * The renderable is removed from the context's render list.
+ *
+ * @param ctx The rendering context that owns the renderable. Must not be NULL.
+ * @param renderable The renderable to destroy. Can be NULL (no-op).
+ *
+ * @note After calling this, the renderable pointer becomes invalid.
+ * @note This is called automatically when the context is destroyed.
+ */
+void poc_context_destroy_renderable(poc_context *ctx, poc_renderable *renderable);
+
+/**
+ * @brief Load a 3D model into a renderable object
+ *
+ * Loads geometry and material data from an OBJ file into the specified
+ * renderable object. Any existing data in the renderable is replaced.
+ *
+ * @param renderable The renderable object to load into. Must not be NULL.
+ * @param obj_filename Path to the OBJ file to load. Must not be NULL.
+ * @return POC_RESULT_SUCCESS on success, or an error code on failure
+ *
+ * @note The OBJ file should be in the same directory as any referenced MTL files.
+ * @warning File must be accessible and in valid OBJ format.
+ */
+poc_result poc_renderable_load_model(poc_renderable *renderable, const char *obj_filename);
+
+/**
+ * @brief Set the transformation matrix for a renderable
+ *
+ * Sets the model transformation matrix that will be applied when rendering
+ * this object. This controls the object's position, rotation, and scale.
+ *
+ * @param renderable The renderable object. Must not be NULL.
+ * @param transform 4x4 transformation matrix in column-major order
+ *
+ * @note The default transform is the identity matrix (no transformation).
+ * @note Uses cglm's mat4 format (column-major, compatible with OpenGL/Vulkan).
+ */
+void poc_renderable_set_transform(poc_renderable *renderable, mat4 transform);
 
 /**
  * @brief Get a human-readable string for a result code

@@ -56,6 +56,36 @@ typedef struct {
     float _pad4;
 } UniformBufferObject;
 
+// Renderable object structure
+struct poc_renderable {
+    // Geometry data
+    VkBuffer vertex_buffer;
+    VkDeviceMemory vertex_buffer_memory;
+    VkBuffer index_buffer;
+    VkDeviceMemory index_buffer_memory;
+    uint32_t vertex_count;
+    uint32_t index_count;
+
+    // Per-object uniform resources
+    VkBuffer uniform_buffer;
+    VkDeviceMemory uniform_buffer_memory;
+    void *uniform_buffer_mapped;
+    VkDescriptorSet descriptor_set;
+
+    // Material properties
+    poc_material material;
+    bool has_material;
+
+    // Transform
+    mat4 model_matrix;
+
+    // Identification
+    char name[256];
+
+    // Context reference (for resource cleanup)
+    poc_context *ctx;
+};
+
 #define VK_CHECK(result) \
     do { \
         VkResult vk_result = (result); \
@@ -97,6 +127,7 @@ struct poc_context {
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
     VkFormat swapchain_format;
+    VkColorSpaceKHR swapchain_colorspace;
     VkExtent2D swapchain_extent;
     VkImage *swapchain_images;
     VkImageView *swapchain_image_views;
@@ -127,23 +158,25 @@ struct poc_context {
     VkShaderModule vert_shader_module;
     VkShaderModule frag_shader_module;
 
-    // Uniform buffers
-    VkBuffer *uniform_buffers;
-    VkDeviceMemory *uniform_buffers_memory;
-    void **uniform_buffers_mapped;
+    // Shared descriptor resources
     VkDescriptorPool descriptor_pool;
-    VkDescriptorSet *descriptor_sets;
+    VkDescriptorSet *descriptor_sets;  // DEPRECATED - kept for fallback compatibility
 
     // Camera/transformation data
     float camera_rotation_y;
 
-    // Model rendering support
+    // Model rendering support (DEPRECATED - use renderables instead)
     VkBuffer vertex_buffer;
     VkDeviceMemory vertex_buffer_memory;
     VkBuffer index_buffer;
     VkDeviceMemory index_buffer_memory;
     uint32_t current_vertex_count;
     uint32_t current_index_count;
+
+    // New renderable system
+    poc_renderable **renderables;
+    uint32_t renderable_count;
+    uint32_t renderable_capacity;
 
     // Depth buffer
     VkImage depth_image;
@@ -177,6 +210,27 @@ static const char *get_present_mode_string(VkPresentModeKHR present_mode) {
         case VK_PRESENT_MODE_FIFO_KHR: return "VK_PRESENT_MODE_FIFO_KHR";
         case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "VK_PRESENT_MODE_FIFO_RELAXED_KHR";
         default: return "UNKNOWN_PRESENT_MODE";
+    }
+}
+
+static const char *get_colorspace_string(VkColorSpaceKHR colorspace) {
+    switch (colorspace) {
+        case VK_COLOR_SPACE_SRGB_NONLINEAR_KHR: return "VK_COLOR_SPACE_SRGB_NONLINEAR_KHR";
+        case VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT: return "VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT";
+        case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT: return "VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT";
+        case VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT: return "VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT";
+        case VK_COLOR_SPACE_DCI_P3_NONLINEAR_EXT: return "VK_COLOR_SPACE_DCI_P3_NONLINEAR_EXT";
+        case VK_COLOR_SPACE_BT709_LINEAR_EXT: return "VK_COLOR_SPACE_BT709_LINEAR_EXT";
+        case VK_COLOR_SPACE_BT709_NONLINEAR_EXT: return "VK_COLOR_SPACE_BT709_NONLINEAR_EXT";
+        case VK_COLOR_SPACE_BT2020_LINEAR_EXT: return "VK_COLOR_SPACE_BT2020_LINEAR_EXT";
+        case VK_COLOR_SPACE_HDR10_ST2084_EXT: return "VK_COLOR_SPACE_HDR10_ST2084_EXT";
+        case VK_COLOR_SPACE_DOLBYVISION_EXT: return "VK_COLOR_SPACE_DOLBYVISION_EXT";
+        case VK_COLOR_SPACE_HDR10_HLG_EXT: return "VK_COLOR_SPACE_HDR10_HLG_EXT";
+        case VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT: return "VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT";
+        case VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT: return "VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT";
+        case VK_COLOR_SPACE_PASS_THROUGH_EXT: return "VK_COLOR_SPACE_PASS_THROUGH_EXT";
+        case VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT: return "VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT";
+        default: return "UNKNOWN_COLORSPACE";
     }
 }
 
@@ -1015,6 +1069,7 @@ static poc_result create_swapchain_internal(poc_context *ctx, VkSwapchainKHR old
 
     // Store swapchain details
     ctx->swapchain_format = surface_format.format;
+    ctx->swapchain_colorspace = surface_format.colorSpace;
     ctx->swapchain_extent = extent;
 
     // Get swapchain images
@@ -1048,6 +1103,7 @@ static poc_result create_swapchain_internal(poc_context *ctx, VkSwapchainKHR old
 
     printf("✓ Swapchain created\n");
     printf("  Format: %s (%d)\n", get_format_string(ctx->swapchain_format), ctx->swapchain_format);
+    printf("  Colorspace: %s (%d)\n", get_colorspace_string(ctx->swapchain_colorspace), ctx->swapchain_colorspace);
     printf("  Extent: %ux%u\n", ctx->swapchain_extent.width, ctx->swapchain_extent.height);
     printf("  Image count: %u\n", ctx->swapchain_image_count);
     printf("  Present mode: %s (%d)\n", get_present_mode_string(present_mode), present_mode);
@@ -1601,27 +1657,7 @@ static poc_result create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
     return POC_RESULT_SUCCESS;
 }
 
-static poc_result create_uniform_buffers(poc_context *ctx) {
-    VkDeviceSize buffer_size = sizeof(UniformBufferObject);
-
-    ctx->uniform_buffers = malloc(MAX_FRAMES_IN_FLIGHT * sizeof(VkBuffer));
-    ctx->uniform_buffers_memory = malloc(MAX_FRAMES_IN_FLIGHT * sizeof(VkDeviceMemory));
-    ctx->uniform_buffers_mapped = malloc(MAX_FRAMES_IN_FLIGHT * sizeof(void*));
-
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        poc_result result = create_buffer(buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                         &ctx->uniform_buffers[i], &ctx->uniform_buffers_memory[i]);
-        if (result != POC_RESULT_SUCCESS) {
-            return result;
-        }
-
-        VK_CHECK(vkMapMemory(g_vk_state.device, ctx->uniform_buffers_memory[i], 0, buffer_size, 0, &ctx->uniform_buffers_mapped[i]));
-    }
-
-    printf("✓ Uniform buffers created (%d buffers)\n", MAX_FRAMES_IN_FLIGHT);
-    return POC_RESULT_SUCCESS;
-}
+// DEPRECATED: create_uniform_buffers - uniform buffers are now created per-renderable
 
 static poc_result create_descriptor_pool(poc_context *ctx) {
     VkDescriptorPoolSize pool_size = {
@@ -1642,47 +1678,7 @@ static poc_result create_descriptor_pool(poc_context *ctx) {
     return POC_RESULT_SUCCESS;
 }
 
-static poc_result create_descriptor_sets(poc_context *ctx) {
-    VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        layouts[i] = ctx->descriptor_set_layout;
-    }
-
-    VkDescriptorSetAllocateInfo alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = ctx->descriptor_pool,
-        .descriptorSetCount = MAX_FRAMES_IN_FLIGHT,
-        .pSetLayouts = layouts
-    };
-
-    ctx->descriptor_sets = malloc(MAX_FRAMES_IN_FLIGHT * sizeof(VkDescriptorSet));
-    VK_CHECK(vkAllocateDescriptorSets(g_vk_state.device, &alloc_info, ctx->descriptor_sets));
-
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        VkDescriptorBufferInfo buffer_info = {
-            .buffer = ctx->uniform_buffers[i],
-            .offset = 0,
-            .range = sizeof(UniformBufferObject)
-        };
-
-        VkWriteDescriptorSet descriptor_write = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = ctx->descriptor_sets[i],
-            .dstBinding = 0,
-            .dstArrayElement = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 1,
-            .pBufferInfo = &buffer_info,
-            .pImageInfo = NULL,
-            .pTexelBufferView = NULL
-        };
-
-        vkUpdateDescriptorSets(g_vk_state.device, 1, &descriptor_write, 0, NULL);
-    }
-
-    printf("✓ Descriptor sets created and updated (%d sets)\n", MAX_FRAMES_IN_FLIGHT);
-    return POC_RESULT_SUCCESS;
-}
+// DEPRECATED: create_descriptor_sets function removed - descriptor sets are now created per-renderable
 
 static poc_result copy_buffer(VkBuffer src_buffer, VkBuffer dst_buffer, VkDeviceSize size, poc_context *ctx) {
     VkCommandBufferAllocateInfo alloc_info = {
@@ -1902,6 +1898,17 @@ poc_context *vulkan_context_create(podi_window *window) {
     ctx->surface = surface;
     ctx->window = window;
 
+    // Initialize renderable array with initial capacity
+    ctx->renderable_capacity = 8;
+    ctx->renderables = malloc(sizeof(poc_renderable*) * ctx->renderable_capacity);
+    if (!ctx->renderables) {
+        printf("Failed to allocate renderables array\n");
+        free(ctx);
+        vkDestroySurfaceKHR(g_vk_state.instance, surface, NULL);
+        return NULL;
+    }
+    ctx->renderable_count = 0;
+
     // Initialize resize tracking
     int initial_width, initial_height;
     podi_window_get_framebuffer_size(window, &initial_width, &initial_height);
@@ -1963,13 +1970,7 @@ poc_context *vulkan_context_create(podi_window *window) {
         return NULL;
     }
 
-    // Create uniform buffers
-    result = create_uniform_buffers(ctx);
-    if (result != POC_RESULT_SUCCESS) {
-        vkDestroySurfaceKHR(g_vk_state.instance, surface, NULL);
-        free(ctx);
-        return NULL;
-    }
+    // NOTE: Uniform buffers are now created per-renderable, not shared
 
     // Create descriptor pool
     result = create_descriptor_pool(ctx);
@@ -1979,13 +1980,7 @@ poc_context *vulkan_context_create(podi_window *window) {
         return NULL;
     }
 
-    // Create descriptor sets
-    result = create_descriptor_sets(ctx);
-    if (result != POC_RESULT_SUCCESS) {
-        vkDestroySurfaceKHR(g_vk_state.instance, surface, NULL);
-        free(ctx);
-        return NULL;
-    }
+    // NOTE: Descriptor sets are now created per-renderable, not shared
 
     // Create depth buffer
     result = create_depth_resources(ctx);
@@ -2068,42 +2063,51 @@ void vulkan_context_destroy(poc_context *ctx) {
         vkDestroySwapchainKHR(g_vk_state.device, ctx->swapchain, NULL);
     }
 
-    // Destroy uniform buffers and descriptor resources
-    if (ctx->uniform_buffers) {
-        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-            if (ctx->uniform_buffers[i] != VK_NULL_HANDLE) {
-                vkDestroyBuffer(g_vk_state.device, ctx->uniform_buffers[i], NULL);
-            }
-        }
-        free(ctx->uniform_buffers);
-    }
-
-    if (ctx->uniform_buffers_memory) {
-        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-            if (ctx->uniform_buffers_memory[i] != VK_NULL_HANDLE) {
-                vkFreeMemory(g_vk_state.device, ctx->uniform_buffers_memory[i], NULL);
-            }
-        }
-        free(ctx->uniform_buffers_memory);
-    }
-
-    if (ctx->uniform_buffers_mapped) {
-        free(ctx->uniform_buffers_mapped);
-    }
+    // NOTE: Uniform buffers are now destroyed per-renderable, not shared
 
     if (ctx->descriptor_pool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(g_vk_state.device, ctx->descriptor_pool, NULL);
     }
 
-    if (ctx->descriptor_sets) {
-        free(ctx->descriptor_sets);
-    }
+    // NOTE: Descriptor sets are now freed per-renderable, not shared
 
     if (ctx->descriptor_set_layout != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(g_vk_state.device, ctx->descriptor_set_layout, NULL);
     }
 
-    // Destroy vertex and index buffers
+    // Destroy all renderables
+    if (ctx->renderables) {
+        for (uint32_t i = 0; i < ctx->renderable_count; i++) {
+            poc_renderable *renderable = ctx->renderables[i];
+            if (renderable) {
+                // Destroy vertex buffer
+                if (renderable->vertex_buffer != VK_NULL_HANDLE) {
+                    vkDestroyBuffer(g_vk_state.device, renderable->vertex_buffer, NULL);
+                }
+                if (renderable->vertex_buffer_memory != VK_NULL_HANDLE) {
+                    vkFreeMemory(g_vk_state.device, renderable->vertex_buffer_memory, NULL);
+                }
+                // Destroy index buffer
+                if (renderable->index_buffer != VK_NULL_HANDLE) {
+                    vkDestroyBuffer(g_vk_state.device, renderable->index_buffer, NULL);
+                }
+                if (renderable->index_buffer_memory != VK_NULL_HANDLE) {
+                    vkFreeMemory(g_vk_state.device, renderable->index_buffer_memory, NULL);
+                }
+                // Destroy per-renderable uniform buffer
+                if (renderable->uniform_buffer != VK_NULL_HANDLE) {
+                    vkDestroyBuffer(g_vk_state.device, renderable->uniform_buffer, NULL);
+                }
+                if (renderable->uniform_buffer_memory != VK_NULL_HANDLE) {
+                    vkFreeMemory(g_vk_state.device, renderable->uniform_buffer_memory, NULL);
+                }
+                free(renderable);
+            }
+        }
+        free(ctx->renderables);
+    }
+
+    // Destroy vertex and index buffers (DEPRECATED)
     if (ctx->vertex_buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(g_vk_state.device, ctx->vertex_buffer, NULL);
     }
@@ -2158,23 +2162,27 @@ void vulkan_context_destroy(poc_context *ctx) {
     printf("✓ Vulkan context destroyed\n");
 }
 
-static void update_uniform_buffer(poc_context *ctx, uint32_t current_image, const poc_material *material) {
+static void update_renderable_uniform_buffer(poc_renderable *renderable) {
+    if (!renderable || !renderable->uniform_buffer_mapped) {
+        return;
+    }
+
     static float time = 0.0f;
     time += 0.016f; // Approximate 60 FPS
 
     UniformBufferObject ubo = {0};
 
-    // Model matrix - rotating cube
-    glm_mat4_identity(ubo.model);
-    glm_rotate(ubo.model, time * glm_rad(90.0f), (vec3){0.0f, 1.0f, 0.0f});
+    // Model matrix from renderable
+    memcpy(ubo.model, renderable->model_matrix, sizeof(mat4));
 
-    // View matrix - camera looking at the cube from a distance
-    vec3 eye = {2.0f, 2.0f, 2.0f};
+    // View matrix - camera looking at the cubes from further back
+    vec3 eye = {0.0f, 2.0f, 6.0f};  // Moved camera back to z=6 and centered on x
     vec3 center = {0.0f, 0.0f, 0.0f};
     vec3 up = {0.0f, 1.0f, 0.0f};
     glm_lookat(eye, center, up, ubo.view);
 
     // Projection matrix
+    poc_context *ctx = renderable->ctx;
     float aspect_ratio = (float)ctx->swapchain_extent.width / (float)ctx->swapchain_extent.height;
     glm_perspective(glm_rad(45.0f), aspect_ratio, 0.1f, 10.0f, ubo.proj);
 
@@ -2183,7 +2191,8 @@ static void update_uniform_buffer(poc_context *ctx, uint32_t current_image, cons
     ubo.proj[1][1] *= -1;
 
     // Material properties
-    if (material) {
+    if (renderable->has_material) {
+        const poc_material *material = &renderable->material;
         ubo.ambient_color[0] = material->ambient[0];
         ubo.ambient_color[1] = material->ambient[1];
         ubo.ambient_color[2] = material->ambient[2];
@@ -2216,9 +2225,11 @@ static void update_uniform_buffer(poc_context *ctx, uint32_t current_image, cons
     ubo.view_pos[1] = eye[1];
     ubo.view_pos[2] = eye[2];
 
-    // Copy data to uniform buffer
-    memcpy(ctx->uniform_buffers_mapped[current_image], &ubo, sizeof(ubo));
+    // Copy data to this renderable's uniform buffer
+    memcpy(renderable->uniform_buffer_mapped, &ubo, sizeof(ubo));
 }
+
+// DEPRECATED: update_uniform_buffer function removed - uniform buffers are now updated per-renderable
 
 poc_result vulkan_context_begin_frame(poc_context *ctx) {
     if (!ctx) {
@@ -2330,24 +2341,41 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
     };
     vkCmdSetScissor(ctx->command_buffers[image_index], 0, 1, &scissor);
 
-    // Update uniform buffer with current MVP matrices (using default material for now)
-    update_uniform_buffer(ctx, ctx->current_frame, NULL);
+    // Render all renderables
+    if (ctx->renderable_count > 0) {
+        static bool first_frame = true;
+        if (first_frame) {
+            printf("✓ Rendering %u renderables per frame\n", ctx->renderable_count);
+            first_frame = false;
+        }
+        for (uint32_t i = 0; i < ctx->renderable_count; i++) {
+            poc_renderable *renderable = ctx->renderables[i];
+            if (!renderable || renderable->vertex_buffer == VK_NULL_HANDLE || renderable->index_buffer == VK_NULL_HANDLE) {
+                printf("Skipping renderable %u: invalid geometry\n", i);
+                continue; // Skip renderables without valid geometry
+            }
 
-    // Bind descriptor sets for uniform buffer
-    vkCmdBindDescriptorSets(ctx->command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS,
-                           ctx->pipeline_layout, 0, 1, &ctx->descriptor_sets[ctx->current_frame], 0, NULL);
+            // Removed debug output for performance
 
-    // Draw using vertex and index buffers if available, otherwise use hardcoded vertices
-    if (ctx->vertex_buffer != VK_NULL_HANDLE && ctx->index_buffer != VK_NULL_HANDLE) {
-        VkBuffer vertex_buffers[] = {ctx->vertex_buffer};
-        VkDeviceSize offsets[] = {0};
-        vkCmdBindVertexBuffers(ctx->command_buffers[image_index], 0, 1, vertex_buffers, offsets);
-        vkCmdBindIndexBuffer(ctx->command_buffers[image_index], ctx->index_buffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(ctx->command_buffers[image_index], ctx->current_index_count, 1, 0, 0, 0);
-    } else {
-        // Fallback to hardcoded cube (36 vertices, 1 instance, no vertex buffers needed as vertices are hardcoded in shader)
-        vkCmdDraw(ctx->command_buffers[image_index], 36, 1, 0, 0);
+            // Update uniform buffer for this renderable
+            update_renderable_uniform_buffer(renderable);
+
+            // Bind descriptor set for this renderable
+            vkCmdBindDescriptorSets(ctx->command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                   ctx->pipeline_layout, 0, 1, &renderable->descriptor_set, 0, NULL);
+
+            // Bind vertex and index buffers for this renderable
+            VkBuffer vertex_buffers[] = {renderable->vertex_buffer};
+            VkDeviceSize offsets[] = {0};
+            vkCmdBindVertexBuffers(ctx->command_buffers[image_index], 0, 1, vertex_buffers, offsets);
+            vkCmdBindIndexBuffer(ctx->command_buffers[image_index], renderable->index_buffer, 0, VK_INDEX_TYPE_UINT32);
+
+            // Draw this renderable
+            vkCmdDrawIndexed(ctx->command_buffers[image_index], renderable->index_count, 1, 0, 0, 0);
+        }
     }
+    // DEPRECATED: Removed fallback rendering code that used shared uniform buffers
+    // All rendering now uses the per-renderable system
 
     // End render pass
     vkCmdEndRenderPass(ctx->command_buffers[image_index]);
@@ -2508,6 +2536,402 @@ poc_result vulkan_context_load_model(poc_context *ctx, const char *obj_filename)
         poc_model_destroy(&model);
         return POC_RESULT_ERROR_INIT_FAILED;
     }
+}
+
+// === New Renderable Management API ===
+
+poc_renderable *poc_context_create_renderable(poc_context *ctx, const char *name) {
+    if (!ctx) {
+        return NULL;
+    }
+
+    // Resize array if needed
+    if (ctx->renderable_count >= ctx->renderable_capacity) {
+        uint32_t new_capacity = ctx->renderable_capacity * 2;
+        poc_renderable **new_renderables = realloc(ctx->renderables, sizeof(poc_renderable*) * new_capacity);
+        if (!new_renderables) {
+            printf("Failed to resize renderables array\n");
+            return NULL;
+        }
+        ctx->renderables = new_renderables;
+        ctx->renderable_capacity = new_capacity;
+    }
+
+    // Allocate new renderable
+    poc_renderable *renderable = malloc(sizeof(poc_renderable));
+    if (!renderable) {
+        printf("Failed to allocate renderable\n");
+        return NULL;
+    }
+
+    // Initialize renderable
+    memset(renderable, 0, sizeof(poc_renderable));
+    renderable->ctx = ctx;
+
+    // Set name
+    if (name) {
+        strncpy(renderable->name, name, sizeof(renderable->name) - 1);
+        renderable->name[sizeof(renderable->name) - 1] = '\0';
+    } else {
+        snprintf(renderable->name, sizeof(renderable->name), "Renderable_%u", ctx->renderable_count);
+    }
+
+    // Initialize transform to identity matrix
+    glm_mat4_identity(renderable->model_matrix);
+
+    // Add to context
+    ctx->renderables[ctx->renderable_count] = renderable;
+    ctx->renderable_count++;
+
+    printf("✓ Created renderable '%s'\n", renderable->name);
+    return renderable;
+}
+
+void poc_context_destroy_renderable(poc_context *ctx, poc_renderable *renderable) {
+    if (!ctx || !renderable) {
+        return;
+    }
+
+    // Find renderable in array
+    uint32_t index = UINT32_MAX;
+    for (uint32_t i = 0; i < ctx->renderable_count; i++) {
+        if (ctx->renderables[i] == renderable) {
+            index = i;
+            break;
+        }
+    }
+
+    if (index == UINT32_MAX) {
+        printf("Warning: Renderable not found in context\n");
+        return;
+    }
+
+    // Destroy GPU resources
+    if (renderable->vertex_buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_vk_state.device, renderable->vertex_buffer, NULL);
+    }
+    if (renderable->vertex_buffer_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_vk_state.device, renderable->vertex_buffer_memory, NULL);
+    }
+    if (renderable->index_buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_vk_state.device, renderable->index_buffer, NULL);
+    }
+    if (renderable->index_buffer_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_vk_state.device, renderable->index_buffer_memory, NULL);
+    }
+
+    // Destroy per-renderable uniform buffer resources
+    if (renderable->uniform_buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_vk_state.device, renderable->uniform_buffer, NULL);
+    }
+    if (renderable->uniform_buffer_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_vk_state.device, renderable->uniform_buffer_memory, NULL);
+    }
+    // Note: descriptor sets are automatically freed when the descriptor pool is destroyed
+
+    printf("✓ Destroyed renderable '%s'\n", renderable->name);
+    free(renderable);
+
+    // Remove from array by shifting remaining elements
+    for (uint32_t i = index; i < ctx->renderable_count - 1; i++) {
+        ctx->renderables[i] = ctx->renderables[i + 1];
+    }
+    ctx->renderable_count--;
+}
+
+static poc_result create_renderable_buffers(poc_renderable *renderable, poc_vertex *vertices, uint32_t vertex_count, uint32_t *indices, uint32_t index_count) {
+    if (!renderable || !vertices || !indices || vertex_count == 0 || index_count == 0) {
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    // Clean up existing buffers if any
+    if (renderable->vertex_buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_vk_state.device, renderable->vertex_buffer, NULL);
+        renderable->vertex_buffer = VK_NULL_HANDLE;
+    }
+    if (renderable->vertex_buffer_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_vk_state.device, renderable->vertex_buffer_memory, NULL);
+        renderable->vertex_buffer_memory = VK_NULL_HANDLE;
+    }
+    if (renderable->index_buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_vk_state.device, renderable->index_buffer, NULL);
+        renderable->index_buffer = VK_NULL_HANDLE;
+    }
+    if (renderable->index_buffer_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_vk_state.device, renderable->index_buffer_memory, NULL);
+        renderable->index_buffer_memory = VK_NULL_HANDLE;
+    }
+    if (renderable->uniform_buffer != VK_NULL_HANDLE) {
+        if (renderable->uniform_buffer_mapped) {
+            vkUnmapMemory(g_vk_state.device, renderable->uniform_buffer_memory);
+            renderable->uniform_buffer_mapped = NULL;
+        }
+        vkDestroyBuffer(g_vk_state.device, renderable->uniform_buffer, NULL);
+        renderable->uniform_buffer = VK_NULL_HANDLE;
+    }
+    if (renderable->uniform_buffer_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_vk_state.device, renderable->uniform_buffer_memory, NULL);
+        renderable->uniform_buffer_memory = VK_NULL_HANDLE;
+    }
+
+    // Create vertex buffer
+    VkDeviceSize vertex_buffer_size = sizeof(poc_vertex) * vertex_count;
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_buffer_memory;
+
+    // Create staging buffer
+    VkBufferCreateInfo staging_buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = vertex_buffer_size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    VK_CHECK(vkCreateBuffer(g_vk_state.device, &staging_buffer_info, NULL, &staging_buffer));
+
+    VkMemoryRequirements mem_requirements;
+    vkGetBufferMemoryRequirements(g_vk_state.device, staging_buffer, &mem_requirements);
+
+    VkMemoryAllocateInfo staging_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_requirements.size,
+        .memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+    };
+
+    VK_CHECK(vkAllocateMemory(g_vk_state.device, &staging_alloc_info, NULL, &staging_buffer_memory));
+    vkBindBufferMemory(g_vk_state.device, staging_buffer, staging_buffer_memory, 0);
+
+    // Copy vertex data to staging buffer
+    void *data;
+    vkMapMemory(g_vk_state.device, staging_buffer_memory, 0, vertex_buffer_size, 0, &data);
+    memcpy(data, vertices, (size_t)vertex_buffer_size);
+    vkUnmapMemory(g_vk_state.device, staging_buffer_memory);
+
+    // Create actual vertex buffer
+    VkBufferCreateInfo vertex_buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = vertex_buffer_size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    VK_CHECK(vkCreateBuffer(g_vk_state.device, &vertex_buffer_info, NULL, &renderable->vertex_buffer));
+
+    vkGetBufferMemoryRequirements(g_vk_state.device, renderable->vertex_buffer, &mem_requirements);
+
+    VkMemoryAllocateInfo vertex_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_requirements.size,
+        .memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+    };
+
+    VK_CHECK(vkAllocateMemory(g_vk_state.device, &vertex_alloc_info, NULL, &renderable->vertex_buffer_memory));
+    vkBindBufferMemory(g_vk_state.device, renderable->vertex_buffer, renderable->vertex_buffer_memory, 0);
+
+    // Copy from staging buffer to vertex buffer
+    poc_result copy_result = copy_buffer(staging_buffer, renderable->vertex_buffer, vertex_buffer_size, renderable->ctx);
+    if (copy_result != POC_RESULT_SUCCESS) {
+        vkDestroyBuffer(g_vk_state.device, staging_buffer, NULL);
+        vkFreeMemory(g_vk_state.device, staging_buffer_memory, NULL);
+        return copy_result;
+    }
+
+    // Clean up staging buffer
+    vkDestroyBuffer(g_vk_state.device, staging_buffer, NULL);
+    vkFreeMemory(g_vk_state.device, staging_buffer_memory, NULL);
+
+    // Create index buffer
+    VkDeviceSize index_buffer_size = sizeof(uint32_t) * index_count;
+
+    // Create staging buffer for indices
+    VkBufferCreateInfo index_staging_buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = index_buffer_size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    VK_CHECK(vkCreateBuffer(g_vk_state.device, &index_staging_buffer_info, NULL, &staging_buffer));
+
+    vkGetBufferMemoryRequirements(g_vk_state.device, staging_buffer, &mem_requirements);
+
+    VkMemoryAllocateInfo index_staging_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_requirements.size,
+        .memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+    };
+
+    VK_CHECK(vkAllocateMemory(g_vk_state.device, &index_staging_alloc_info, NULL, &staging_buffer_memory));
+    vkBindBufferMemory(g_vk_state.device, staging_buffer, staging_buffer_memory, 0);
+
+    // Copy index data to staging buffer
+    vkMapMemory(g_vk_state.device, staging_buffer_memory, 0, index_buffer_size, 0, &data);
+    memcpy(data, indices, (size_t)index_buffer_size);
+    vkUnmapMemory(g_vk_state.device, staging_buffer_memory);
+
+    // Create actual index buffer
+    VkBufferCreateInfo index_buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = index_buffer_size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    VK_CHECK(vkCreateBuffer(g_vk_state.device, &index_buffer_info, NULL, &renderable->index_buffer));
+
+    vkGetBufferMemoryRequirements(g_vk_state.device, renderable->index_buffer, &mem_requirements);
+
+    VkMemoryAllocateInfo index_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_requirements.size,
+        .memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+    };
+
+    VK_CHECK(vkAllocateMemory(g_vk_state.device, &index_alloc_info, NULL, &renderable->index_buffer_memory));
+    vkBindBufferMemory(g_vk_state.device, renderable->index_buffer, renderable->index_buffer_memory, 0);
+
+    // Copy from staging buffer to index buffer
+    copy_result = copy_buffer(staging_buffer, renderable->index_buffer, index_buffer_size, renderable->ctx);
+    if (copy_result != POC_RESULT_SUCCESS) {
+        vkDestroyBuffer(g_vk_state.device, staging_buffer, NULL);
+        vkFreeMemory(g_vk_state.device, staging_buffer_memory, NULL);
+        return copy_result;
+    }
+
+    // Clean up staging buffer
+    vkDestroyBuffer(g_vk_state.device, staging_buffer, NULL);
+    vkFreeMemory(g_vk_state.device, staging_buffer_memory, NULL);
+
+    // Store counts
+    renderable->vertex_count = vertex_count;
+    renderable->index_count = index_count;
+
+    // Create uniform buffer for this renderable
+    VkDeviceSize uniform_buffer_size = sizeof(UniformBufferObject);
+
+    VkBufferCreateInfo uniform_buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = uniform_buffer_size,
+        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    VK_CHECK(vkCreateBuffer(g_vk_state.device, &uniform_buffer_info, NULL, &renderable->uniform_buffer));
+
+    vkGetBufferMemoryRequirements(g_vk_state.device, renderable->uniform_buffer, &mem_requirements);
+
+    VkMemoryAllocateInfo uniform_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_requirements.size,
+        .memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits,
+                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+    };
+
+    VK_CHECK(vkAllocateMemory(g_vk_state.device, &uniform_alloc_info, NULL, &renderable->uniform_buffer_memory));
+    vkBindBufferMemory(g_vk_state.device, renderable->uniform_buffer, renderable->uniform_buffer_memory, 0);
+
+    // Map the uniform buffer memory for persistent mapping
+    VK_CHECK(vkMapMemory(g_vk_state.device, renderable->uniform_buffer_memory, 0, uniform_buffer_size, 0, &renderable->uniform_buffer_mapped));
+
+    // Allocate descriptor set for this renderable
+    VkDescriptorSetAllocateInfo desc_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = renderable->ctx->descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &renderable->ctx->descriptor_set_layout
+    };
+
+    VkResult desc_result = vkAllocateDescriptorSets(g_vk_state.device, &desc_alloc_info, &renderable->descriptor_set);
+    if (desc_result != VK_SUCCESS) {
+        printf("Failed to allocate descriptor set for renderable: %d\n", desc_result);
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    // Update descriptor set to point to this renderable's uniform buffer
+    VkDescriptorBufferInfo buffer_info = {
+        .buffer = renderable->uniform_buffer,
+        .offset = 0,
+        .range = sizeof(UniformBufferObject)
+    };
+
+    VkWriteDescriptorSet descriptor_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = renderable->descriptor_set,
+        .dstBinding = 0,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &buffer_info
+    };
+
+    vkUpdateDescriptorSets(g_vk_state.device, 1, &descriptor_write, 0, NULL);
+
+    return POC_RESULT_SUCCESS;
+}
+
+poc_result poc_renderable_load_model(poc_renderable *renderable, const char *obj_filename) {
+    if (!renderable || !obj_filename) {
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    printf("Loading model '%s' into renderable '%s'\n", obj_filename, renderable->name);
+
+    poc_model model;
+    poc_obj_result obj_result = poc_model_load(obj_filename, &model);
+    if (obj_result != POC_OBJ_RESULT_SUCCESS) {
+        printf("Failed to load OBJ file %s: %s\n", obj_filename, poc_obj_result_to_string(obj_result));
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    printf("✓ OBJ file loaded: %u objects, %u materials\n", model.object_count, model.material_count);
+
+    // Find the first non-empty group in any object
+    poc_mesh_group *group = NULL;
+    for (uint32_t obj_idx = 0; obj_idx < model.object_count && !group; obj_idx++) {
+        for (uint32_t grp_idx = 0; grp_idx < model.objects[obj_idx].group_count; grp_idx++) {
+            if (model.objects[obj_idx].groups[grp_idx].vertex_count > 0) {
+                group = &model.objects[obj_idx].groups[grp_idx];
+                break;
+            }
+        }
+    }
+
+    if (!group) {
+        printf("Warning: No geometry found in OBJ file\n");
+        poc_model_destroy(&model);
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    // Create GPU buffers for the renderable
+    poc_result result = create_renderable_buffers(renderable, group->vertices, group->vertex_count, group->indices, group->index_count);
+    if (result != POC_RESULT_SUCCESS) {
+        poc_model_destroy(&model);
+        return result;
+    }
+
+    // Copy material if available
+    if (group->material_index < model.material_count) {
+        renderable->material = model.materials[group->material_index];
+        renderable->has_material = true;
+        printf("✓ Material loaded: %s\n", renderable->material.name);
+    } else {
+        // Use default material
+        renderable->has_material = false;
+        printf("Using default material\n");
+    }
+
+    poc_model_destroy(&model);
+    printf("✓ Model loaded into renderable '%s': %u vertices, %u indices\n",
+           renderable->name, renderable->vertex_count, renderable->index_count);
+
+    return POC_RESULT_SUCCESS;
+}
+
+void poc_renderable_set_transform(poc_renderable *renderable, mat4 transform) {
+    if (!renderable) {
+        return;
+    }
+    glm_mat4_copy(transform, renderable->model_matrix);
 }
 
 #endif
