@@ -12,7 +12,7 @@
 #define DEFAULT_NEAR         0.1f
 #define DEFAULT_FAR          100.0f
 
-static void update_camera_vectors(poc_camera *camera);
+void poc_camera_update_vectors(poc_camera *camera);
 static void calculate_view_matrix(poc_camera *camera);
 static void calculate_projection_matrix(poc_camera *camera);
 
@@ -66,7 +66,7 @@ poc_camera poc_camera_create(poc_camera_type type, float aspect_ratio) {
 
     // Update camera vectors and matrices
     camera.matrices_dirty = true;
-    update_camera_vectors(&camera);
+    poc_camera_update_vectors(&camera);
     poc_camera_update_matrices(&camera);
 
     return camera;
@@ -80,7 +80,7 @@ poc_camera poc_camera_create_fps(vec3 position, float yaw, float pitch, float as
     camera.pitch = pitch;
 
     camera.matrices_dirty = true;
-    update_camera_vectors(&camera);
+    poc_camera_update_vectors(&camera);
     poc_camera_update_matrices(&camera);
 
     return camera;
@@ -104,7 +104,7 @@ poc_camera poc_camera_create_orbit(vec3 target, float distance, float yaw, float
     camera.position[2] = z;
 
     camera.matrices_dirty = true;
-    update_camera_vectors(&camera);
+    poc_camera_update_vectors(&camera);
     poc_camera_update_matrices(&camera);
 
     return camera;
@@ -134,7 +134,7 @@ void poc_camera_set_rotation(poc_camera *camera, float yaw, float pitch, float r
     camera->pitch = pitch;
     camera->roll = roll;
 
-    update_camera_vectors(camera);
+    poc_camera_update_vectors(camera);
     camera->matrices_dirty = true;
 }
 
@@ -304,7 +304,7 @@ void poc_camera_process_mouse_movement(poc_camera *camera, double mouse_x, doubl
             break;
     }
 
-    update_camera_vectors(camera);
+    poc_camera_update_vectors(camera);
     camera->matrices_dirty = true;
 }
 
@@ -364,7 +364,7 @@ const float *poc_camera_get_right(poc_camera *camera) {
 
 // Internal helper functions
 
-static void update_camera_vectors(poc_camera *camera) {
+void poc_camera_update_vectors(poc_camera *camera) {
     if (!camera) return;
 
     if (camera->type == POC_CAMERA_ORBIT) {

@@ -203,11 +203,7 @@ int my_main(podi_application *app) {
                     break;
 
                 case PODI_EVENT_MOUSE_MOVE:
-                    // Only print every 20th mouse move to reduce spam
-                    static int mouse_move_counter = 0;
-                    if (++mouse_move_counter % 20 == 0) {
-                        printf("MOUSE_MOVE: (%.1f, %.1f)\n", event.mouse_move.x, event.mouse_move.y);
-                    }
+                    printf("MOUSE_MOVE: (%.1f, %.1f)\n", event.mouse_move.x, event.mouse_move.y);
                     // Forward mouse movement to camera controller
                     poc_scripting_call_function(scripting, "process_mouse_movement", "dd",
                                                event.mouse_move.x, event.mouse_move.y);

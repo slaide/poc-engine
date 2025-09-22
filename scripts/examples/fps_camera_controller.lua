@@ -173,18 +173,20 @@ function FPSCamera:process_keyboard(key, pressed)
 end
 
 function FPSCamera:process_mouse_button(button, pressed)
-    -- Handle mouse look activation
-    -- For now, use any mouse button as mouse look toggle
-    -- This could be made configurable later
-    if not self.settings.mouse_look_mode then
-        self.mouse_look_active = pressed
+    -- Handle mouse look activation with left mouse button
+    if button == MOUSE_BUTTON.LEFT then
+        if not self.settings.mouse_look_mode then
+            -- Convert C boolean (1/0) to Lua boolean
+            local is_pressed = pressed ~= 0
+            self.mouse_look_active = is_pressed
 
-        -- Reset first mouse when entering/exiting mouse look
-        if pressed then
-            self.first_mouse = true
-            print("Mouse look activated")
-        else
-            print("Mouse look deactivated")
+            -- Reset first mouse when entering/exiting mouse look
+            if is_pressed then
+                self.first_mouse = true
+                print("Mouse look activated (hold left mouse button)")
+            else
+                print("Mouse look deactivated")
+            end
         end
     end
 end
@@ -303,7 +305,7 @@ print("  Shift - Move down")
 if fps_camera.settings.mouse_look_mode then
     print("  Mouse - Look around (always on)")
 else
-    print("  Hold Mouse Button - Look around")
+    print("  Hold Left Mouse Button - Look around")
 end
 print("  Mouse wheel - Zoom in/out")
 

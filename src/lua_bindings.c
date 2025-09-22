@@ -132,6 +132,20 @@ void poc_scripting_register_bindings(lua_State *L) {
     lua_setfield(L, -2, "ESCAPE");
     lua_setglobal(L, "KEY");
 
+    // Register mouse button constants
+    lua_newtable(L);
+    lua_pushinteger(L, PODI_MOUSE_BUTTON_LEFT);
+    lua_setfield(L, -2, "LEFT");
+    lua_pushinteger(L, PODI_MOUSE_BUTTON_RIGHT);
+    lua_setfield(L, -2, "RIGHT");
+    lua_pushinteger(L, PODI_MOUSE_BUTTON_MIDDLE);
+    lua_setfield(L, -2, "MIDDLE");
+    lua_pushinteger(L, PODI_MOUSE_BUTTON_X1);
+    lua_setfield(L, -2, "X1");
+    lua_pushinteger(L, PODI_MOUSE_BUTTON_X2);
+    lua_setfield(L, -2, "X2");
+    lua_setglobal(L, "MOUSE_BUTTON");
+
     printf("✓ POC Engine Lua userdata bindings registered\n");
 }
 
@@ -288,12 +302,15 @@ static int lua_camera_newindex(lua_State *L) {
 
     if (strcmp(key, "yaw") == 0) {
         camera->yaw = (float)luaL_checknumber(L, 3);
+        poc_camera_update_vectors(camera);
         camera->matrices_dirty = true;
     } else if (strcmp(key, "pitch") == 0) {
         camera->pitch = (float)luaL_checknumber(L, 3);
+        poc_camera_update_vectors(camera);
         camera->matrices_dirty = true;
     } else if (strcmp(key, "roll") == 0) {
         camera->roll = (float)luaL_checknumber(L, 3);
+        poc_camera_update_vectors(camera);
         camera->matrices_dirty = true;
     } else if (strcmp(key, "fov") == 0) {
         camera->fov = (float)luaL_checknumber(L, 3);

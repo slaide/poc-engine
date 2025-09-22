@@ -142,6 +142,16 @@ poc_camera poc_camera_create_orbit(vec3 target, float distance, float yaw, float
 void poc_camera_update_matrices(poc_camera *camera);
 
 /**
+ * @brief Update camera direction vectors
+ *
+ * Recalculates the camera's front, right, and up vectors based on
+ * current yaw, pitch, and roll values. Called when orientation changes.
+ *
+ * @param camera The camera to update. Must not be NULL.
+ */
+void poc_camera_update_vectors(poc_camera *camera);
+
+/**
  * @brief Set camera position
  *
  * Sets the camera position and marks matrices as dirty for recalculation.
