@@ -36,6 +36,8 @@ static int lua_poc_pick_object(lua_State *L);
 static int lua_poc_scene_add_object(lua_State *L);
 static int lua_poc_scene_object_set_mesh(lua_State *L);
 static int lua_poc_scene_object_set_position(lua_State *L);
+static int lua_poc_set_play_mode(lua_State *L);
+static int lua_poc_is_play_mode(lua_State *L);
 
 // Camera userdata methods
 static int lua_camera_update(lua_State *L);
@@ -166,6 +168,13 @@ void poc_scripting_register_bindings(lua_State *L) {
 
     lua_pushcfunction(L, lua_poc_get_cursor_position);
     lua_setfield(L, -2, "get_cursor_position");
+
+    // Play/Edit mode toggle
+    lua_pushcfunction(L, lua_poc_set_play_mode);
+    lua_setfield(L, -2, "set_play_mode");
+
+    lua_pushcfunction(L, lua_poc_is_play_mode);
+    lua_setfield(L, -2, "is_play_mode");
 
     // Set POC table as global
     lua_setglobal(L, "POC");
@@ -738,6 +747,30 @@ static int lua_poc_scene_object_set_position(lua_State *L) {
     vec3 position = {x, y, z};
     poc_scene_object_set_position(*obj_ptr, position);
     return 0;
+}
+
+static int lua_poc_set_play_mode(lua_State *L) {
+    bool enabled = lua_toboolean(L, 1);
+
+    if (!g_active_context) {
+        lua_pushstring(L, "No active context set - cannot set play mode");
+        lua_error(L);
+        return 0;
+    }
+
+    poc_context_set_play_mode(g_active_context, enabled);
+    return 0;
+}
+
+static int lua_poc_is_play_mode(lua_State *L) {
+    bool is_play_mode = false;
+
+    if (g_active_context) {
+        is_play_mode = poc_context_is_play_mode(g_active_context);
+    }
+
+    lua_pushboolean(L, is_play_mode);
+    return 1;
 }
 
 static int lua_poc_set_cursor_mode(lua_State *L) {

@@ -11,11 +11,16 @@ layout(binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
     vec3 ambient_color;
+    float _pad1;
     vec3 diffuse_color;
+    float _pad2;
     vec3 specular_color;
     float shininess;
     vec3 light_pos;
+    float _pad3;
     vec3 view_pos;
+    float _pad4;
+    vec4 render_params;
 } ubo;
 
 // Outputs to fragment shader

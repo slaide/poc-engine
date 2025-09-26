@@ -526,6 +526,25 @@ void poc_context_set_scene(poc_context *ctx, poc_scene *scene);
  */
 poc_result poc_context_render_scene(poc_context *ctx, poc_scene *scene);
 
+/**
+ * @brief Toggle play mode (lit) rendering on the context
+ *
+ * When play mode is disabled the renderer outputs unlit diffuse colors,
+ * useful while editing. Enabling play mode restores full lighting.
+ *
+ * @param ctx Rendering context to update. Must not be NULL.
+ * @param enabled True for play mode (lit), false for edit mode (unlit)
+ */
+void poc_context_set_play_mode(poc_context *ctx, bool enabled);
+
+/**
+ * @brief Query the current play/edit mode state
+ *
+ * @param ctx Rendering context to inspect
+ * @return True if play mode (lit) is active, otherwise false
+ */
+bool poc_context_is_play_mode(poc_context *ctx);
+
 #ifdef __cplusplus
 }
 #endif

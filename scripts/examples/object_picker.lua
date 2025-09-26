@@ -53,8 +53,8 @@ function ObjectPicker.new()
     self.fps_mode_enabled = false
     self:set_fps_mode(false, true)
     print("✓ Object Picker initialized")
-    print("Press F to toggle FPS camera mode (starts unlocked)")
-    print("Click on objects to identify them!")
+    print("Edit mode active: click objects to select (unlit shading)")
+    print("Press F to enter play mode for FPS controls and lighting")
 
     return self
 end
@@ -292,10 +292,12 @@ function ObjectPicker:set_fps_mode(enabled, force)
     POC.set_cursor_mode(enabled, not enabled)
     self.first_mouse = true
 
+    POC.set_play_mode(enabled)
+
     if enabled then
-        print("FPS camera mode enabled (cursor hidden & locked)")
+        print("Play mode enabled: lighting on, cursor locked")
     else
-        print("FPS camera mode disabled (cursor visible)")
+        print("Edit mode enabled: unlit shading, cursor visible")
     end
 end
 

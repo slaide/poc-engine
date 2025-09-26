@@ -299,3 +299,44 @@ poc_result poc_context_render_scene(poc_context *ctx, poc_scene *scene) {
 
     return POC_RESULT_ERROR_INIT_FAILED;
 }
+
+void poc_context_set_play_mode(poc_context *ctx, bool enabled) {
+    if (!ctx) {
+        return;
+    }
+
+#ifdef POC_PLATFORM_LINUX
+    if (g_current_renderer == POC_RENDERER_VULKAN) {
+        vulkan_context_set_play_mode(ctx, enabled);
+        return;
+    }
+#endif
+
+#ifdef POC_PLATFORM_MACOS
+    if (g_current_renderer == POC_RENDERER_METAL) {
+        // TODO: Implement Metal play/edit mode toggle
+        return;
+    }
+#endif
+}
+
+bool poc_context_is_play_mode(poc_context *ctx) {
+    if (!ctx) {
+        return false;
+    }
+
+#ifdef POC_PLATFORM_LINUX
+    if (g_current_renderer == POC_RENDERER_VULKAN) {
+        return vulkan_context_is_play_mode(ctx);
+    }
+#endif
+
+#ifdef POC_PLATFORM_MACOS
+    if (g_current_renderer == POC_RENDERER_METAL) {
+        // TODO: Report Metal play/edit mode when implemented
+        return false;
+    }
+#endif
+
+    return false;
+}

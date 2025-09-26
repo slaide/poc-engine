@@ -11,16 +11,27 @@ layout(binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
     vec3 ambient_color;
+    float _pad1;
     vec3 diffuse_color;
+    float _pad2;
     vec3 specular_color;
     float shininess;
     vec3 light_pos;
+    float _pad3;
     vec3 view_pos;
+    float _pad4;
+    vec4 render_params;
 } ubo;
 
 layout(location = 0) out vec4 outColor;
 
 void main() {
+    // Edit mode flag lives in render_params.x (0 = edit, 1 = play)
+    if (ubo.render_params.x < 0.5) {
+        outColor = vec4(ubo.diffuse_color, 1.0);
+        return;
+    }
+
     // Normalize the interpolated normal
     vec3 normal = normalize(fragNormal);
 

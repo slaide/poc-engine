@@ -67,6 +67,7 @@ typedef struct {
     float _pad3;
     vec3 view_pos;
     float _pad4;
+    vec4 render_params;
 } UniformBufferObject;
 
 // Renderable object structure
@@ -193,6 +194,9 @@ struct poc_context {
 
     // Scene system
     poc_scene *active_scene;
+
+    // Play/Edit mode state
+    bool play_mode;
 
     // Depth buffer
     VkImage depth_image;
@@ -1938,6 +1942,7 @@ poc_context *vulkan_context_create(podi_window *window) {
     ctx->vk = &g_vk_state;
     ctx->surface = surface;
     ctx->window = window;
+    ctx->play_mode = false;
 
     // Initialize renderable array with initial capacity
     ctx->renderable_capacity = 8;
@@ -2285,6 +2290,12 @@ static void update_renderable_uniform_buffer(poc_renderable *renderable) {
         ubo.view_pos[1] = 2.0f;
         ubo.view_pos[2] = 6.0f;
     }
+
+    // Encode play/edit mode flag for shader logic
+    ubo.render_params[0] = ctx->play_mode ? 1.0f : 0.0f;
+    ubo.render_params[1] = 0.0f;
+    ubo.render_params[2] = 0.0f;
+    ubo.render_params[3] = 0.0f;
 
     // Copy data to this renderable's uniform buffer
     memcpy(renderable->uniform_buffer_mapped, &ubo, sizeof(ubo));
@@ -3347,6 +3358,22 @@ poc_result vulkan_context_render_scene(poc_context *ctx, poc_scene *scene) {
     free(is_temporary);
 
     return POC_RESULT_SUCCESS;
+}
+
+void vulkan_context_set_play_mode(poc_context *ctx, bool enabled) {
+    if (!ctx) {
+        return;
+    }
+
+    ctx->play_mode = enabled;
+}
+
+bool vulkan_context_is_play_mode(const poc_context *ctx) {
+    if (!ctx) {
+        return false;
+    }
+
+    return ctx->play_mode;
 }
 
 #endif

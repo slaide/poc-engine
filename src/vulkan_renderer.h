@@ -181,4 +181,17 @@ void vulkan_context_set_scene(poc_context *ctx, poc_scene *scene);
  */
 poc_result vulkan_context_render_scene(poc_context *ctx, poc_scene *scene);
 
+/**
+ * @brief Toggle play mode rendering state (lighting on/off)
+ *
+ * Internal function controlled via public poc_context_set_play_mode().
+ * When disabled, Vulkan renderer outputs unlit diffuse colors.
+ */
+void vulkan_context_set_play_mode(poc_context *ctx, bool enabled);
+
+/**
+ * @brief Query whether the Vulkan context is currently in play mode.
+ */
+bool vulkan_context_is_play_mode(const poc_context *ctx);
+
 #endif
