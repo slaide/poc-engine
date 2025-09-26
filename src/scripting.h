@@ -228,6 +228,16 @@ void poc_scripting_set_context(struct poc_context *context);
  */
 void poc_scripting_set_window(struct podi_window *window);
 
+/**
+ * @brief Get the currently active scene
+ *
+ * Returns the scene that was set as active by the Lua script.
+ * This allows C code to access the scene for rendering.
+ *
+ * @return Pointer to the active scene, or NULL if no scene is active
+ */
+struct poc_scene *poc_scripting_get_active_scene(void);
+
 #ifdef __cplusplus
 }
 #endif

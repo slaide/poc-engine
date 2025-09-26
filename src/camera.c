@@ -1,4 +1,5 @@
 #include "camera.h"
+#include "scene.h"
 #include <math.h>
 #include <string.h>
 
@@ -402,4 +403,70 @@ static void calculate_projection_matrix(poc_camera *camera) {
 
     glm_perspective(glm_rad(camera->fov), camera->aspect_ratio,
                    camera->near_plane, camera->far_plane, camera->projection_matrix);
+}
+
+bool poc_camera_screen_to_ray(const poc_camera *camera, float screen_x, float screen_y, poc_ray *ray) {
+    if (!camera || !ray) {
+        return false;
+    }
+
+    // Ensure matrices are up to date
+    poc_camera *mutable_camera = (poc_camera*)camera;
+    poc_camera_update_matrices(mutable_camera);
+
+    // Convert screen coordinates to NDC (Normalized Device Coordinates)
+    // Screen coords are [0,1] where (0,0) is top-left
+    // NDC is [-1,1] where (-1,-1) is bottom-left
+    float ndc_x = (screen_x * 2.0f) - 1.0f;
+    float ndc_y = 1.0f - (screen_y * 2.0f);  // Flip Y axis
+
+    // Create clip space coordinates for near and far plane
+    vec4 near_clip = {ndc_x, ndc_y, -1.0f, 1.0f};  // Near plane
+    vec4 far_clip = {ndc_x, ndc_y, 1.0f, 1.0f};    // Far plane
+
+    // Calculate inverse view-projection matrix
+    mat4 view_proj;
+    mat4 inv_view_proj;
+    mat4 proj_copy, view_copy;
+
+    // Copy const matrices to local copies
+    memcpy(proj_copy, camera->projection_matrix, sizeof(mat4));
+    memcpy(view_copy, camera->view_matrix, sizeof(mat4));
+
+    glm_mat4_mul(proj_copy, view_copy, view_proj);
+
+    glm_mat4_inv(view_proj, inv_view_proj);
+
+    // Unproject near and far points to world space
+    vec4 near_world, far_world;
+    glm_mat4_mulv(inv_view_proj, near_clip, near_world);
+    glm_mat4_mulv(inv_view_proj, far_clip, far_world);
+
+    // Perspective divide
+    if (near_world[3] == 0.0f || far_world[3] == 0.0f) {
+        return false; // Invalid homogeneous coordinates
+    }
+
+    vec3 near_point = {
+        near_world[0] / near_world[3],
+        near_world[1] / near_world[3],
+        near_world[2] / near_world[3]
+    };
+
+    vec3 far_point = {
+        far_world[0] / far_world[3],
+        far_world[1] / far_world[3],
+        far_world[2] / far_world[3]
+    };
+
+    // Ray origin is the camera position
+    vec3 pos_copy;
+    memcpy(pos_copy, camera->position, sizeof(vec3));
+    glm_vec3_copy(pos_copy, ray->origin);
+
+    // Ray direction is from near point towards far point
+    glm_vec3_sub(far_point, near_point, ray->direction);
+    glm_vec3_normalize(ray->direction);
+
+    return true;
 }

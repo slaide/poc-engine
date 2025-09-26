@@ -71,58 +71,26 @@ int my_main(podi_application *app) {
     poc_scripting_set_window(window);
 
 
-    // Load and run the FPS camera controller script
-    poc_script_result script_result = poc_scripting_load_file(scripting, "fps_camera_controller.lua");
+    // Load and run the object picker script
+    poc_script_result script_result = poc_scripting_load_file(scripting, "object_picker.lua");
     if (script_result != POC_SCRIPT_SUCCESS) {
-        printf("Failed to load FPS camera controller: %s\n", poc_scripting_get_last_error(scripting));
-        printf("Continuing without camera script...\n");
+        printf("Failed to load object picker: %s\n", poc_scripting_get_last_error(scripting));
+        printf("Continuing without object picker script...\n");
     } else {
-        printf("✓ FPS camera controller loaded successfully\n");
+        printf("✓ Object picker script loaded successfully\n");
+
+        // Set the scene created by the Lua script as the active scene for rendering
+        poc_scene *active_scene = poc_scripting_get_active_scene();
+        if (active_scene) {
+            poc_context_set_scene(ctx, active_scene);
+            printf("✓ Scene set for automatic rendering\n");
+        } else {
+            printf("⚠ No active scene found from Lua script\n");
+        }
     }
 
-    // Create two renderable objects
-    poc_renderable *cube1 = poc_context_create_renderable(ctx, "GoldenCube");
-    poc_renderable *cube2 = poc_context_create_renderable(ctx, "RedCube");
-
-    if (!cube1 || !cube2) {
-        printf("Failed to create renderable objects\n");
-        poc_context_destroy(ctx);
-        podi_window_destroy(window);
-        poc_shutdown();
-        return -1;
-    }
-
-    // Load models into renderables
-    result = poc_renderable_load_model(cube1, "models/cube.obj");
-    if (result != POC_RESULT_SUCCESS) {
-        printf("Failed to load cube model: %s\n", poc_result_to_string(result));
-        printf("Falling back to hardcoded cube\n");
-    } else {
-        printf("✓ Golden cube model loaded successfully\n");
-    }
-
-    result = poc_renderable_load_model(cube2, "models/cube_red.obj");
-    if (result != POC_RESULT_SUCCESS) {
-        printf("Failed to load red cube model: %s\n", poc_result_to_string(result));
-        printf("Using golden cube for both\n");
-    } else {
-        printf("✓ Red cube model loaded successfully\n");
-    }
-
-    // Set different positions for the cubes
-    mat4 transform1, transform2;
-    glm_mat4_identity(transform1);
-    glm_mat4_identity(transform2);
-
-    // Position first cube to the left
-    glm_translate(transform1, (vec3){-1.5f, 0.0f, 0.0f});
-    poc_renderable_set_transform(cube1, transform1);
-
-    // Position second cube to the right
-    glm_translate(transform2, (vec3){1.5f, 0.0f, 0.0f});
-    poc_renderable_set_transform(cube2, transform2);
-
-    printf("✓ Both cubes positioned: Golden cube at (-1.5, 0, 0), Red cube at (1.5, 0, 0)\n");
+    // The Lua script created scene objects that will be automatically rendered
+    printf("✓ Scene objects created and ready for rendering\n");
 
     const double target_fps = 120.0;
 
@@ -137,6 +105,15 @@ int my_main(podi_application *app) {
     float window_scale_factor = podi_window_get_scale_factor(window);
     podi_window_get_size(window, &actual_width, &actual_height);
     podi_window_get_framebuffer_size(window, &framebuffer_width, &framebuffer_height);
+
+    double logical_to_physical_x = 1.0;
+    double logical_to_physical_y = 1.0;
+    if (actual_width > 0) {
+        logical_to_physical_x = (double)framebuffer_width / (double)actual_width;
+    }
+    if (actual_height > 0) {
+        logical_to_physical_y = (double)framebuffer_height / (double)actual_height;
+    }
 
     printf("Logical size: %dx%d\n\n", logical_width, logical_height);
     printf("Window scale factor: %.1f\n", window_scale_factor);
@@ -158,6 +135,12 @@ int my_main(podi_application *app) {
         bool resize_pending = false;
         int resize_width = last_width;
         int resize_height = last_height;
+
+        // Track current mouse position in both logical (window) and physical (framebuffer) coordinates
+        static double mouse_x_logical = 0.0;
+        static double mouse_y_logical = 0.0;
+        static double mouse_x_physical = 0.0;
+        static double mouse_y_physical = 0.0;
 
         podi_event event;
         while (podi_application_poll_event(app, &event)) {
@@ -189,24 +172,35 @@ int my_main(podi_application *app) {
                 case PODI_EVENT_MOUSE_BUTTON_DOWN:
                     printf("MOUSE_DOWN: %s (id=%d)\n",
                            podi_get_mouse_button_name(event.mouse_button.button), event.mouse_button.button);
-                    // Forward mouse button event to camera controller
-                    poc_scripting_call_function(scripting, "process_mouse_button", "ii",
-                                               (int)event.mouse_button.button, 1);
+                    // Forward mouse button event to camera controller with physical coordinates and framebuffer dimensions for picking
+                    poc_scripting_call_function(scripting, "process_mouse_button", "iiddii",
+                                               (int)event.mouse_button.button, 1,
+                                               mouse_x_physical, mouse_y_physical,
+                                               framebuffer_width, framebuffer_height);
                     break;
 
                 case PODI_EVENT_MOUSE_BUTTON_UP:
                     printf("MOUSE_UP: %s (id=%d)\n",
                            podi_get_mouse_button_name(event.mouse_button.button), event.mouse_button.button);
-                    // Forward mouse button event to camera controller
-                    poc_scripting_call_function(scripting, "process_mouse_button", "ii",
-                                               (int)event.mouse_button.button, 0);
+                    // Forward mouse button event to camera controller with physical coordinates and framebuffer dimensions for picking
+                    poc_scripting_call_function(scripting, "process_mouse_button", "iiddii",
+                                               (int)event.mouse_button.button, 0,
+                                               mouse_x_physical, mouse_y_physical,
+                                               framebuffer_width, framebuffer_height);
                     break;
 
                 case PODI_EVENT_MOUSE_MOVE:
-                    printf("MOUSE_MOVE: (%.1f, %.1f)\n", event.mouse_move.x, event.mouse_move.y);
-                    // Forward mouse movement to camera controller
-                    poc_scripting_call_function(scripting, "process_mouse_movement", "dd",
-                                               event.mouse_move.x, event.mouse_move.y);
+                    mouse_x_logical = event.mouse_move.x;
+                    mouse_y_logical = event.mouse_move.y;
+                    mouse_x_physical = mouse_x_logical * logical_to_physical_x;
+                    mouse_y_physical = mouse_y_logical * logical_to_physical_y;
+                    printf("MOUSE_MOVE: (%.1f, %.1f) delta=(%.1f, %.1f)\n",
+                           event.mouse_move.x, event.mouse_move.y,
+                           event.mouse_move.delta_x, event.mouse_move.delta_y);
+                    // Forward mouse movement to camera controller with both absolute and delta coordinates
+                    poc_scripting_call_function(scripting, "process_mouse_movement", "dddd",
+                                               event.mouse_move.x, event.mouse_move.y,
+                                               event.mouse_move.delta_x, event.mouse_move.delta_y);
                     break;
 
                 case PODI_EVENT_MOUSE_SCROLL:
@@ -224,15 +218,25 @@ int my_main(podi_application *app) {
 
                 case PODI_EVENT_WINDOW_FOCUS:
                     printf("WINDOW_FOCUS_GAINED\n");
+                    poc_scripting_call_function(scripting, "on_window_focus", "b", 1);
                     break;
 
                 case PODI_EVENT_WINDOW_UNFOCUS:
                     printf("WINDOW_FOCUS_LOST\n");
+                    poc_scripting_call_function(scripting, "on_window_focus", "b", 0);
                     break;
 
-                case PODI_EVENT_MOUSE_ENTER:
+                case PODI_EVENT_MOUSE_ENTER: {
                     printf("MOUSE_ENTER_WINDOW\n");
+                    double cursor_x = 0.0, cursor_y = 0.0;
+                    podi_window_get_cursor_position(window, &cursor_x, &cursor_y);
+                    mouse_x_physical = cursor_x;
+                    mouse_y_physical = cursor_y;
+                    mouse_x_logical = logical_to_physical_x > 0.0 ? cursor_x / logical_to_physical_x : cursor_x;
+                    mouse_y_logical = logical_to_physical_y > 0.0 ? cursor_y / logical_to_physical_y : cursor_y;
+                    poc_scripting_call_function(scripting, "on_mouse_enter", "dd", mouse_x_logical, mouse_y_logical);
                     break;
+                }
 
                 case PODI_EVENT_MOUSE_LEAVE:
                     printf("MOUSE_LEAVE_WINDOW\n");
@@ -248,6 +252,24 @@ int my_main(podi_application *app) {
             printf("WINDOW_RESIZE: %dx%d\n", resize_width, resize_height);
             last_width = resize_width;
             last_height = resize_height;
+
+            podi_window_get_size(window, &actual_width, &actual_height);
+            podi_window_get_framebuffer_size(window, &framebuffer_width, &framebuffer_height);
+
+            if (actual_width > 0) {
+                logical_to_physical_x = (double)framebuffer_width / (double)actual_width;
+            } else {
+                logical_to_physical_x = 1.0;
+            }
+
+            if (actual_height > 0) {
+                logical_to_physical_y = (double)framebuffer_height / (double)actual_height;
+            } else {
+                logical_to_physical_y = 1.0;
+            }
+
+            mouse_x_physical = mouse_x_logical * logical_to_physical_x;
+            mouse_y_physical = mouse_y_logical * logical_to_physical_y;
         }
 
         // Frame rate control
@@ -267,25 +289,11 @@ int my_main(podi_application *app) {
         float g = (sinf(color_time + 2.0f) + 1.0f) * 0.5f;
         float b = (sinf(color_time + 4.0f) + 1.0f) * 0.5f;
 
-        // Animate the cubes with different rotations
-        mat4 anim_transform1, anim_transform2;
-        glm_mat4_identity(anim_transform1);
-        glm_mat4_identity(anim_transform2);
-
-        // First cube: translate further left, rotate around Y axis
-        glm_translate(anim_transform1, (vec3){-2.5f, 0.0f, 0.0f});
-        glm_rotate(anim_transform1, color_time * 1.0f, (vec3){0.0f, 1.0f, 0.0f});
-        poc_renderable_set_transform(cube1, anim_transform1);
-
-        // Second cube: translate further right, rotate around X and Z axes
-        glm_translate(anim_transform2, (vec3){2.5f, 0.0f, 0.0f});
-        glm_rotate(anim_transform2, color_time * 0.7f, (vec3){1.0f, 0.0f, 0.0f});
-        glm_rotate(anim_transform2, color_time * 0.5f, (vec3){0.0f, 0.0f, 1.0f});
-        poc_renderable_set_transform(cube2, anim_transform2);
-
         result = poc_context_begin_frame(ctx);
         if (result == POC_RESULT_SUCCESS) {
             poc_context_clear_color(ctx, r, g, b, 1.0f);
+            // Scene objects are automatically rendered in begin_frame
+
             result = poc_context_end_frame(ctx);
             if (result != POC_RESULT_SUCCESS) {
                 printf("Failed to end frame: %s\n", poc_result_to_string(result));

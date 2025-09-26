@@ -3,6 +3,9 @@
 #include "poc_engine.h"
 #include "vulkan_renderer.h"
 #include "math_bindings.h"
+#include "scene.h"
+#include "scene_object.h"
+#include "mesh.h"
 #include <podi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +14,9 @@
 // Metatable names for userdata
 #define CAMERA_METATABLE "POCEngine.Camera"
 #define VEC3_METATABLE "POCEngine.Vec3"
+#define SCENE_METATABLE "POCEngine.Scene"
+#define SCENE_OBJECT_METATABLE "POCEngine.SceneObject"
+#define MESH_METATABLE "POCEngine.Mesh"
 
 // Forward declarations for binding functions
 static int lua_poc_get_time(lua_State *L);
@@ -18,6 +24,18 @@ static int lua_poc_sleep(lua_State *L);
 static int lua_poc_create_camera(lua_State *L);
 static int lua_poc_bind_camera(lua_State *L);
 static int lua_poc_quit_application(lua_State *L);
+static int lua_poc_set_cursor_mode(lua_State *L);
+static int lua_poc_get_cursor_position(lua_State *L);
+
+// Scene system bindings
+static int lua_poc_create_scene(lua_State *L);
+static int lua_poc_bind_scene(lua_State *L);
+static int lua_poc_create_scene_object(lua_State *L);
+static int lua_poc_load_mesh(lua_State *L);
+static int lua_poc_pick_object(lua_State *L);
+static int lua_poc_scene_add_object(lua_State *L);
+static int lua_poc_scene_object_set_mesh(lua_State *L);
+static int lua_poc_scene_object_set_position(lua_State *L);
 
 // Camera userdata methods
 static int lua_camera_update(lua_State *L);
@@ -39,10 +57,14 @@ static poc_camera *push_camera_userdata(lua_State *L, poc_camera *camera);
 static void push_vec3_userdata(lua_State *L, vec3 *v, poc_camera *camera, const char *property);
 
 // Global context for camera binding
-static struct poc_context *g_active_context = NULL;
+struct poc_context *g_active_context = NULL;
 
 // Global window for application control
 static podi_window *g_active_window = NULL;
+
+// Global scene and camera for picking
+static poc_scene *g_active_scene = NULL;
+static poc_camera *g_active_camera = NULL;
 
 void poc_scripting_register_bindings(lua_State *L) {
     if (!L) return;
@@ -80,6 +102,18 @@ void poc_scripting_register_bindings(lua_State *L) {
     lua_setfield(L, -2, "__gc");
     lua_pop(L, 1); // Remove metatable from stack
 
+    // Create Scene metatable
+    luaL_newmetatable(L, SCENE_METATABLE);
+    lua_pop(L, 1);
+
+    // Create SceneObject metatable
+    luaL_newmetatable(L, SCENE_OBJECT_METATABLE);
+    lua_pop(L, 1);
+
+    // Create Mesh metatable
+    luaL_newmetatable(L, MESH_METATABLE);
+    lua_pop(L, 1);
+
     // Create POC table
     lua_newtable(L);
 
@@ -101,6 +135,38 @@ void poc_scripting_register_bindings(lua_State *L) {
     lua_pushcfunction(L, lua_poc_quit_application);
     lua_setfield(L, -2, "quit_application");
 
+    // Scene system
+    lua_pushcfunction(L, lua_poc_create_scene);
+    lua_setfield(L, -2, "create_scene");
+
+    lua_pushcfunction(L, lua_poc_bind_scene);
+    lua_setfield(L, -2, "bind_scene");
+
+    lua_pushcfunction(L, lua_poc_create_scene_object);
+    lua_setfield(L, -2, "create_scene_object");
+
+    lua_pushcfunction(L, lua_poc_load_mesh);
+    lua_setfield(L, -2, "load_mesh");
+
+    lua_pushcfunction(L, lua_poc_pick_object);
+    lua_setfield(L, -2, "pick_object");
+
+    lua_pushcfunction(L, lua_poc_scene_add_object);
+    lua_setfield(L, -2, "scene_add_object");
+
+    lua_pushcfunction(L, lua_poc_scene_object_set_mesh);
+    lua_setfield(L, -2, "scene_object_set_mesh");
+
+    lua_pushcfunction(L, lua_poc_scene_object_set_position);
+    lua_setfield(L, -2, "scene_object_set_position");
+
+    // Cursor control functions
+    lua_pushcfunction(L, lua_poc_set_cursor_mode);
+    lua_setfield(L, -2, "set_cursor_mode");
+
+    lua_pushcfunction(L, lua_poc_get_cursor_position);
+    lua_setfield(L, -2, "get_cursor_position");
+
     // Set POC table as global
     lua_setglobal(L, "POC");
 
@@ -116,34 +182,49 @@ void poc_scripting_register_bindings(lua_State *L) {
 
     // Register key constants
     lua_newtable(L);
-    lua_pushinteger(L, PODI_KEY_W);
-    lua_setfield(L, -2, "W");
-    lua_pushinteger(L, PODI_KEY_A);
-    lua_setfield(L, -2, "A");
-    lua_pushinteger(L, PODI_KEY_S);
-    lua_setfield(L, -2, "S");
-    lua_pushinteger(L, PODI_KEY_D);
-    lua_setfield(L, -2, "D");
-    lua_pushinteger(L, PODI_KEY_SPACE);
-    lua_setfield(L, -2, "SPACE");
-    lua_pushinteger(L, PODI_KEY_SHIFT);
-    lua_setfield(L, -2, "SHIFT");
-    lua_pushinteger(L, PODI_KEY_ESCAPE);
-    lua_setfield(L, -2, "ESCAPE");
+    static const struct {
+        const char *name;
+        podi_key value;
+    } key_constants[] = {
+        {"UNKNOWN", PODI_KEY_UNKNOWN},
+        {"A", PODI_KEY_A}, {"B", PODI_KEY_B}, {"C", PODI_KEY_C}, {"D", PODI_KEY_D},
+        {"E", PODI_KEY_E}, {"F", PODI_KEY_F}, {"G", PODI_KEY_G}, {"H", PODI_KEY_H},
+        {"I", PODI_KEY_I}, {"J", PODI_KEY_J}, {"K", PODI_KEY_K}, {"L", PODI_KEY_L},
+        {"M", PODI_KEY_M}, {"N", PODI_KEY_N}, {"O", PODI_KEY_O}, {"P", PODI_KEY_P},
+        {"Q", PODI_KEY_Q}, {"R", PODI_KEY_R}, {"S", PODI_KEY_S}, {"T", PODI_KEY_T},
+        {"U", PODI_KEY_U}, {"V", PODI_KEY_V}, {"W", PODI_KEY_W}, {"X", PODI_KEY_X},
+        {"Y", PODI_KEY_Y}, {"Z", PODI_KEY_Z},
+        {"D0", PODI_KEY_0}, {"D1", PODI_KEY_1}, {"D2", PODI_KEY_2}, {"D3", PODI_KEY_3},
+        {"D4", PODI_KEY_4}, {"D5", PODI_KEY_5}, {"D6", PODI_KEY_6}, {"D7", PODI_KEY_7},
+        {"D8", PODI_KEY_8}, {"D9", PODI_KEY_9},
+        {"SPACE", PODI_KEY_SPACE}, {"ENTER", PODI_KEY_ENTER}, {"ESCAPE", PODI_KEY_ESCAPE},
+        {"BACKSPACE", PODI_KEY_BACKSPACE}, {"TAB", PODI_KEY_TAB},
+        {"SHIFT", PODI_KEY_SHIFT}, {"CTRL", PODI_KEY_CTRL}, {"ALT", PODI_KEY_ALT},
+        {"UP", PODI_KEY_UP}, {"DOWN", PODI_KEY_DOWN},
+        {"LEFT", PODI_KEY_LEFT}, {"RIGHT", PODI_KEY_RIGHT},
+    };
+    for (size_t i = 0; i < sizeof(key_constants) / sizeof(key_constants[0]); ++i) {
+        lua_pushinteger(L, key_constants[i].value);
+        lua_setfield(L, -2, key_constants[i].name);
+    }
     lua_setglobal(L, "KEY");
 
     // Register mouse button constants
     lua_newtable(L);
-    lua_pushinteger(L, PODI_MOUSE_BUTTON_LEFT);
-    lua_setfield(L, -2, "LEFT");
-    lua_pushinteger(L, PODI_MOUSE_BUTTON_RIGHT);
-    lua_setfield(L, -2, "RIGHT");
-    lua_pushinteger(L, PODI_MOUSE_BUTTON_MIDDLE);
-    lua_setfield(L, -2, "MIDDLE");
-    lua_pushinteger(L, PODI_MOUSE_BUTTON_X1);
-    lua_setfield(L, -2, "X1");
-    lua_pushinteger(L, PODI_MOUSE_BUTTON_X2);
-    lua_setfield(L, -2, "X2");
+    static const struct {
+        const char *name;
+        podi_mouse_button value;
+    } mouse_constants[] = {
+        {"LEFT", PODI_MOUSE_BUTTON_LEFT},
+        {"RIGHT", PODI_MOUSE_BUTTON_RIGHT},
+        {"MIDDLE", PODI_MOUSE_BUTTON_MIDDLE},
+        {"X1", PODI_MOUSE_BUTTON_X1},
+        {"X2", PODI_MOUSE_BUTTON_X2},
+    };
+    for (size_t i = 0; i < sizeof(mouse_constants) / sizeof(mouse_constants[0]); ++i) {
+        lua_pushinteger(L, mouse_constants[i].value);
+        lua_setfield(L, -2, mouse_constants[i].name);
+    }
     lua_setglobal(L, "MOUSE_BUTTON");
 
     printf("✓ POC Engine Lua userdata bindings registered\n");
@@ -209,6 +290,9 @@ static int lua_poc_bind_camera(lua_State *L) {
     // Set camera on the active context
     vulkan_context_set_camera(g_active_context, camera);
 
+    // Store camera globally for picking
+    g_active_camera = camera;
+
     return 0;
 }
 
@@ -232,6 +316,11 @@ void poc_scripting_set_context(struct poc_context *context) {
 // Set the window for application control
 void poc_scripting_set_window(podi_window *window) {
     g_active_window = window;
+}
+
+// Get the currently active scene (set by Lua script)
+poc_scene *poc_scripting_get_active_scene(void) {
+    return g_active_scene;
 }
 
 // Camera userdata implementation
@@ -458,9 +547,227 @@ static int lua_vec3_gc(lua_State *L) {
     return 0;
 }
 
+// Scene system function implementations
 
+static int lua_poc_create_scene(lua_State *L) {
+    poc_scene *scene = poc_scene_create();
+    if (!scene) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Failed to create scene");
+        return 2;
+    }
 
+    poc_scene **userdata = (poc_scene **)lua_newuserdata(L, sizeof(poc_scene *));
+    *userdata = scene;
+    luaL_setmetatable(L, SCENE_METATABLE);
+    return 1;
+}
 
+static int lua_poc_bind_scene(lua_State *L) {
+    poc_scene **scene_ptr = (poc_scene **)luaL_checkudata(L, 1, SCENE_METATABLE);
+    if (!scene_ptr || !*scene_ptr) {
+        lua_pushstring(L, "Invalid scene object");
+        lua_error(L);
+        return 0;
+    }
+
+    g_active_scene = *scene_ptr;
+    printf("✓ Scene bound for picking\n");
+    return 0;
+}
+
+static int lua_poc_create_scene_object(lua_State *L) {
+    const char *name = luaL_checkstring(L, 1);
+    uint32_t id = (uint32_t)luaL_checkinteger(L, 2);
+
+    poc_scene_object *obj = poc_scene_object_create(name, id);
+    if (!obj) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Failed to create scene object");
+        return 2;
+    }
+
+    poc_scene_object **userdata = (poc_scene_object **)lua_newuserdata(L, sizeof(poc_scene_object *));
+    *userdata = obj;
+    luaL_setmetatable(L, SCENE_OBJECT_METATABLE);
+    return 1;
+}
+
+static int lua_poc_load_mesh(lua_State *L) {
+    const char *filename = luaL_checkstring(L, 1);
+
+    poc_mesh *mesh = poc_mesh_load(filename);
+    if (!mesh) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "Failed to load mesh from '%s'", filename);
+        return 2;
+    }
+
+    poc_mesh **userdata = (poc_mesh **)lua_newuserdata(L, sizeof(poc_mesh *));
+    *userdata = mesh;
+    luaL_setmetatable(L, MESH_METATABLE);
+    return 1;
+}
+
+static int lua_poc_pick_object(lua_State *L) {
+    float x = (float)luaL_checknumber(L, 1);
+    float y = (float)luaL_checknumber(L, 2);
+    int width = luaL_checkinteger(L, 3);
+    int height = luaL_checkinteger(L, 4);
+
+    if (!g_active_scene || !g_active_camera) {
+        lua_pushnil(L);
+        lua_pushstring(L, "No active scene or camera for picking");
+        return 2;
+    }
+
+    // Convert screen coordinates to normalized coordinates [0,1]
+    float norm_x = x / (float)width;
+    float norm_y = y / (float)height;
+
+    printf("🎯 PICKING DEBUG: Screen (%.1f, %.1f) -> Normalized (%.3f, %.3f)\n", x, y, norm_x, norm_y);
+
+    // Generate ray from camera through screen point
+    poc_ray ray;
+    if (!poc_camera_screen_to_ray(g_active_camera, norm_x, norm_y, &ray)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Failed to generate picking ray");
+        return 2;
+    }
+
+    printf("🎯 RAY: Origin (%.2f, %.2f, %.2f) Direction (%.3f, %.3f, %.3f)\n",
+           ray.origin[0], ray.origin[1], ray.origin[2],
+           ray.direction[0], ray.direction[1], ray.direction[2]);
+
+    // Camera debug
+    printf("🎯 CAMERA: Position (%.2f, %.2f, %.2f) Yaw %.1f° Pitch %.1f°\n",
+           g_active_camera->position[0], g_active_camera->position[1], g_active_camera->position[2],
+           g_active_camera->yaw, g_active_camera->pitch);
+
+    // Scene objects debug
+    printf("🎯 SCENE: %d objects to test\n", g_active_scene->object_count);
+    for (uint32_t i = 0; i < g_active_scene->object_count; i++) {
+        poc_scene_object *obj = g_active_scene->objects[i];
+        if (obj) {
+            printf("🎯 OBJECT[%d]: %s ID=%d Position(%.2f, %.2f, %.2f) Renderable=%s\n",
+                   i, obj->name, obj->id,
+                   obj->position[0], obj->position[1], obj->position[2],
+                   poc_scene_object_is_renderable(obj) ? "YES" : "NO");
+            if (poc_scene_object_is_renderable(obj)) {
+                printf("🎯   AABB: Min(%.2f, %.2f, %.2f) Max(%.2f, %.2f, %.2f)\n",
+                       obj->world_aabb_min[0], obj->world_aabb_min[1], obj->world_aabb_min[2],
+                       obj->world_aabb_max[0], obj->world_aabb_max[1], obj->world_aabb_max[2]);
+            }
+        }
+    }
+
+    // Perform picking
+    poc_hit_result hit;
+    if (poc_scene_pick_object(g_active_scene, &ray, &hit) && hit.hit) {
+        // Create hit result table
+        lua_newtable(L);
+
+        lua_pushboolean(L, true);
+        lua_setfield(L, -2, "hit");
+
+        lua_pushinteger(L, hit.object->id);
+        lua_setfield(L, -2, "object_id");
+
+        lua_pushstring(L, hit.object->name);
+        lua_setfield(L, -2, "object_name");
+
+        lua_pushnumber(L, hit.distance);
+        lua_setfield(L, -2, "distance");
+
+        // Hit point
+        lua_newtable(L);
+        lua_pushnumber(L, hit.point[0]);
+        lua_setfield(L, -2, "x");
+        lua_pushnumber(L, hit.point[1]);
+        lua_setfield(L, -2, "y");
+        lua_pushnumber(L, hit.point[2]);
+        lua_setfield(L, -2, "z");
+        lua_setfield(L, -2, "point");
+
+        return 1;
+    } else {
+        // No hit
+        lua_newtable(L);
+        lua_pushboolean(L, false);
+        lua_setfield(L, -2, "hit");
+        return 1;
+    }
+}
+
+static int lua_poc_scene_add_object(lua_State *L) {
+    poc_scene **scene_ptr = (poc_scene **)luaL_checkudata(L, 1, SCENE_METATABLE);
+    poc_scene_object **obj_ptr = (poc_scene_object **)luaL_checkudata(L, 2, SCENE_OBJECT_METATABLE);
+
+    if (!scene_ptr || !*scene_ptr || !obj_ptr || !*obj_ptr) {
+        lua_pushboolean(L, false);
+        return 1;
+    }
+
+    bool success = poc_scene_add_object(*scene_ptr, *obj_ptr);
+    lua_pushboolean(L, success);
+    return 1;
+}
+
+static int lua_poc_scene_object_set_mesh(lua_State *L) {
+    poc_scene_object **obj_ptr = (poc_scene_object **)luaL_checkudata(L, 1, SCENE_OBJECT_METATABLE);
+    poc_mesh **mesh_ptr = (poc_mesh **)luaL_checkudata(L, 2, MESH_METATABLE);
+
+    if (!obj_ptr || !*obj_ptr || !mesh_ptr || !*mesh_ptr) {
+        return 0;
+    }
+
+    poc_scene_object_set_mesh(*obj_ptr, *mesh_ptr);
+    return 0;
+}
+
+static int lua_poc_scene_object_set_position(lua_State *L) {
+    poc_scene_object **obj_ptr = (poc_scene_object **)luaL_checkudata(L, 1, SCENE_OBJECT_METATABLE);
+    float x = (float)luaL_checknumber(L, 2);
+    float y = (float)luaL_checknumber(L, 3);
+    float z = (float)luaL_checknumber(L, 4);
+
+    if (!obj_ptr || !*obj_ptr) {
+        return 0;
+    }
+
+    vec3 position = {x, y, z};
+    poc_scene_object_set_position(*obj_ptr, position);
+    return 0;
+}
+
+static int lua_poc_set_cursor_mode(lua_State *L) {
+    bool locked = lua_toboolean(L, 1);
+    bool visible = lua_toboolean(L, 2);
+
+    if (!g_active_window) {
+        lua_pushstring(L, "No active window set - cannot set cursor mode");
+        lua_error(L);
+        return 0;
+    }
+
+    podi_window_set_cursor_mode(g_active_window, locked, visible);
+    return 0;
+}
+
+static int lua_poc_get_cursor_position(lua_State *L) {
+    if (!g_active_window) {
+        lua_pushstring(L, "No active window set - cannot get cursor position");
+        lua_error(L);
+        return 0;
+    }
+
+    double x, y;
+    podi_window_get_cursor_position(g_active_window, &x, &y);
+
+    lua_pushnumber(L, x);
+    lua_pushnumber(L, y);
+    return 2;
+}
 
 // Utility functions
 

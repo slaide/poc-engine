@@ -17,6 +17,9 @@
 extern "C" {
 #endif
 
+// Forward declaration for ray picking
+typedef struct poc_ray poc_ray;
+
 /**
  * @brief Camera types supported by the system
  */
@@ -150,6 +153,20 @@ void poc_camera_update_matrices(poc_camera *camera);
  * @param camera The camera to update. Must not be NULL.
  */
 void poc_camera_update_vectors(poc_camera *camera);
+
+/**
+ * @brief Convert screen coordinates to a world space ray
+ *
+ * Converts normalized screen coordinates to a ray in world space for picking.
+ * Screen coordinates should be in range [0, 1] where (0,0) is top-left.
+ *
+ * @param camera The camera to use for unprojection
+ * @param screen_x Normalized screen X coordinate (0-1)
+ * @param screen_y Normalized screen Y coordinate (0-1)
+ * @param ray Output ray structure
+ * @return True if ray was generated successfully, false otherwise
+ */
+bool poc_camera_screen_to_ray(const poc_camera *camera, float screen_x, float screen_y, poc_ray *ray);
 
 /**
  * @brief Set camera position

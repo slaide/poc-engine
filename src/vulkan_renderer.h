@@ -154,4 +154,31 @@ poc_result vulkan_context_set_vertex_data(poc_context *ctx, poc_vertex *vertices
  */
 void vulkan_context_set_camera(poc_context *ctx, poc_camera *camera);
 
+/**
+ * @brief Set the active scene for Vulkan rendering
+ *
+ * Internal function that sets the active scene for automatic rendering
+ * during begin_frame calls.
+ *
+ * @param ctx The rendering context
+ * @param scene The scene to make active, or NULL to clear
+ *
+ * @note This is an internal function - use poc_context_set_scene() instead.
+ */
+void vulkan_context_set_scene(poc_context *ctx, poc_scene *scene);
+
+/**
+ * @brief Render all objects in a scene using Vulkan
+ *
+ * Internal function that renders all renderable scene objects using the
+ * Vulkan backend.
+ *
+ * @param ctx The rendering context
+ * @param scene The scene containing objects to render
+ * @return POC_RESULT_SUCCESS on success, or an error code on failure
+ *
+ * @note This is an internal function - use poc_context_render_scene() instead.
+ */
+poc_result vulkan_context_render_scene(poc_context *ctx, poc_scene *scene);
+
 #endif

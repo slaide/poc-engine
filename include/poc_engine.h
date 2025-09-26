@@ -74,6 +74,15 @@ typedef struct poc_renderer poc_renderer;
 typedef struct poc_renderable poc_renderable;
 
 /**
+ * @brief Forward declarations for scene system
+ */
+typedef struct poc_scene poc_scene;
+typedef struct poc_scene_object poc_scene_object;
+typedef struct poc_mesh poc_mesh;
+typedef struct poc_ray poc_ray;
+typedef struct poc_hit_result poc_hit_result;
+
+/**
  * @brief Graphics renderer backend types
  *
  * Specifies which graphics API backend to use for rendering.
@@ -277,6 +286,21 @@ void poc_context_destroy_renderable(poc_context *ctx, poc_renderable *renderable
 poc_result poc_renderable_load_model(poc_renderable *renderable, const char *obj_filename);
 
 /**
+ * @brief Load mesh data into a renderable object
+ *
+ * Loads vertex and index data from a poc_mesh into the specified
+ * renderable object. Any existing data in the renderable is replaced.
+ *
+ * @param renderable The renderable object to load into. Must not be NULL.
+ * @param mesh The mesh containing vertex and index data. Must not be NULL.
+ * @return POC_RESULT_SUCCESS on success, or an error code on failure
+ *
+ * @note This allows loading mesh data that's already in memory, unlike
+ *       poc_renderable_load_model which loads from a file.
+ */
+poc_result poc_renderable_load_mesh(poc_renderable *renderable, poc_mesh *mesh);
+
+/**
  * @brief Set the transformation matrix for a renderable
  *
  * Sets the model transformation matrix that will be applied when rendering
@@ -329,6 +353,178 @@ double poc_get_time(void);
  * @note For frame rate limiting, consider using vertical sync instead.
  */
 void poc_sleep(double seconds);
+
+// ============================================================================
+// Scene Management System
+// ============================================================================
+
+/**
+ * @brief Create a new empty scene
+ *
+ * Creates a scene that can contain multiple scene objects for rendering
+ * and object picking functionality.
+ *
+ * @return Pointer to new scene, or NULL on failure
+ */
+poc_scene* poc_scene_create(void);
+
+/**
+ * @brief Destroy a scene and optionally destroy its objects
+ *
+ * @param scene The scene to destroy
+ * @param destroy_objects Whether to destroy the objects in the scene
+ */
+void poc_scene_destroy(poc_scene *scene, bool destroy_objects);
+
+/**
+ * @brief Create a new scene object
+ *
+ * @param name Human-readable name for the object
+ * @param id Unique ID for the object (use poc_scene_get_next_object_id)
+ * @return Pointer to new scene object, or NULL on failure
+ */
+poc_scene_object* poc_scene_object_create(const char *name, uint32_t id);
+
+/**
+ * @brief Destroy a scene object and free its resources
+ *
+ * @param obj The scene object to destroy
+ */
+void poc_scene_object_destroy(poc_scene_object *obj);
+
+/**
+ * @brief Load a mesh from an OBJ file
+ *
+ * @param filename Path to the OBJ file
+ * @return Pointer to loaded mesh, or NULL on failure
+ */
+poc_mesh* poc_mesh_load(const char *filename);
+
+/**
+ * @brief Destroy a mesh and free its resources
+ *
+ * @param mesh The mesh to destroy
+ */
+void poc_mesh_destroy(poc_mesh *mesh);
+
+/**
+ * @brief Set the mesh component of a scene object
+ *
+ * @param obj The scene object
+ * @param mesh The mesh to attach (can be NULL to remove)
+ */
+void poc_scene_object_set_mesh(poc_scene_object *obj, poc_mesh *mesh);
+
+/**
+ * @brief Set the position of a scene object
+ *
+ * @param obj The scene object
+ * @param position New position
+ */
+void poc_scene_object_set_position(poc_scene_object *obj, vec3 position);
+
+/**
+ * @brief Set the rotation of a scene object
+ *
+ * @param obj The scene object
+ * @param rotation New rotation in degrees (Euler angles)
+ */
+void poc_scene_object_set_rotation(poc_scene_object *obj, vec3 rotation);
+
+/**
+ * @brief Set the scale of a scene object
+ *
+ * @param obj The scene object
+ * @param scale New scale factors
+ */
+void poc_scene_object_set_scale(poc_scene_object *obj, vec3 scale);
+
+/**
+ * @brief Get the current world transform matrix
+ *
+ * @param obj The scene object
+ * @return Pointer to the 4x4 transform matrix
+ */
+const mat4* poc_scene_object_get_transform_matrix(poc_scene_object *obj);
+
+/**
+ * @brief Add an object to the scene
+ *
+ * @param scene The scene
+ * @param object The object to add
+ * @return True if added successfully, false otherwise
+ */
+bool poc_scene_add_object(poc_scene *scene, poc_scene_object *object);
+
+/**
+ * @brief Remove an object from the scene
+ *
+ * @param scene The scene
+ * @param object The object to remove
+ * @return True if removed successfully, false if not found
+ */
+bool poc_scene_remove_object(poc_scene *scene, poc_scene_object *object);
+
+/**
+ * @brief Find an object in the scene by ID
+ *
+ * @param scene The scene
+ * @param id The object ID to search for
+ * @return Pointer to object, or NULL if not found
+ */
+poc_scene_object* poc_scene_find_object_by_id(poc_scene *scene, uint32_t id);
+
+/**
+ * @brief Get the next available object ID
+ *
+ * @param scene The scene
+ * @return Next available object ID
+ */
+uint32_t poc_scene_get_next_object_id(poc_scene *scene);
+
+/**
+ * @brief Update all objects in the scene
+ *
+ * Updates transforms and bounds for all dirty objects.
+ *
+ * @param scene The scene
+ */
+void poc_scene_update(poc_scene *scene);
+
+/**
+ * @brief Perform picking ray cast against all objects in the scene
+ *
+ * Tests the ray against all renderable objects and returns the closest hit.
+ *
+ * @param scene The scene
+ * @param ray The picking ray
+ * @param hit_result Output hit result (closest hit or no hit)
+ * @return True if any object was hit, false otherwise
+ */
+bool poc_scene_pick_object(poc_scene *scene,
+                          const poc_ray *ray,
+                          poc_hit_result *hit_result);
+
+/**
+ * @brief Set the active scene for a rendering context
+ *
+ * The active scene's objects will be automatically rendered during
+ * begin_frame/end_frame calls. This replaces the need to manually
+ * call poc_context_render_scene.
+ *
+ * @param ctx The rendering context. Must not be NULL.
+ * @param scene The scene to make active, or NULL to clear the active scene
+ */
+void poc_context_set_scene(poc_context *ctx, poc_scene *scene);
+
+/**
+ * @brief Render all objects in a scene using the specified context
+ *
+ * @param ctx The rendering context
+ * @param scene The scene containing objects to render
+ * @return POC_RESULT_SUCCESS on success, or an error code on failure
+ */
+poc_result poc_context_render_scene(poc_context *ctx, poc_scene *scene);
 
 #ifdef __cplusplus
 }

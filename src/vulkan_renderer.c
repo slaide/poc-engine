@@ -4,6 +4,9 @@
 #include "poc_engine.h"
 #include "obj_loader.h"
 #include "camera.h"
+#include "scene.h"
+#include "scene_object.h"
+#include "mesh.h"
 #include <vulkan/vulkan.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,6 +43,7 @@ bool podi_window_get_wayland_handles(podi_window *window, podi_wayland_handles *
 // Forward declarations for depth resource management
 static void cleanup_depth_resources(poc_context *ctx);
 static poc_result create_depth_resources(poc_context *ctx);
+static poc_renderable* create_renderable_from_scene_object(poc_context *ctx, poc_scene_object *obj);
 
 // Title bar height constant (logical pixels) for client-side decorations
 #define PODI_TITLE_BAR_HEIGHT 40
@@ -186,6 +190,9 @@ struct poc_context {
     poc_renderable **renderables;
     uint32_t renderable_count;
     uint32_t renderable_capacity;
+
+    // Scene system
+    poc_scene *active_scene;
 
     // Depth buffer
     VkImage depth_image;
@@ -2486,21 +2493,70 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
     }
 #endif
 
-    // Render all renderables
-    if (ctx->renderable_count > 0) {
+    // Render objects - prioritize active scene if available
+    uint32_t render_count = 0;
+    poc_renderable **render_list = NULL;
+    bool *is_scene_temporary = NULL;
+
+    if (ctx->active_scene) {
+        // Use scene renderables
+        poc_scene_update(ctx->active_scene);
+        uint32_t scene_renderable_count;
+        poc_scene_object **scene_objects = poc_scene_get_renderable_objects(ctx->active_scene, &scene_renderable_count);
+
+        if (scene_objects && scene_renderable_count > 0) {
+            render_list = malloc(sizeof(poc_renderable*) * scene_renderable_count);
+            is_scene_temporary = malloc(sizeof(bool) * scene_renderable_count);
+
+            if (render_list && is_scene_temporary) {
+                for (uint32_t i = 0; i < scene_renderable_count; i++) {
+                    poc_scene_object *obj = scene_objects[i];
+                    if (obj->renderable && obj->renderable->vertex_buffer != VK_NULL_HANDLE) {
+                        // Use scene object's own renderable
+                        render_list[render_count] = obj->renderable;
+                        is_scene_temporary[render_count] = false;
+
+                        // Update transform
+                        const mat4 *transform = poc_scene_object_get_transform_matrix(obj);
+                        if (transform) {
+                            mat4 transform_copy;
+                            memcpy(transform_copy, *transform, sizeof(mat4));
+                            poc_renderable_set_transform(render_list[render_count], transform_copy);
+                        }
+                        render_count++;
+                    } else {
+                        // Create temporary renderable
+                        poc_renderable *temp_renderable = create_renderable_from_scene_object(ctx, obj);
+                        if (temp_renderable) {
+                            render_list[render_count] = temp_renderable;
+                            is_scene_temporary[render_count] = true;
+                            render_count++;
+                        }
+                    }
+                }
+            }
+        }
+    } else if (ctx->renderable_count > 0) {
+        // Use context renderables as fallback
+        render_list = ctx->renderables;
+        render_count = ctx->renderable_count;
+        // is_scene_temporary remains NULL for context renderables
+    }
+
+    // Render the collected renderables
+    if (render_count > 0) {
         static bool first_frame = true;
         if (first_frame) {
-            printf("✓ Rendering %u renderables per frame\n", ctx->renderable_count);
+            printf("✓ Rendering %u %s per frame\n", render_count,
+                   ctx->active_scene ? "scene objects" : "renderables");
             first_frame = false;
         }
-        for (uint32_t i = 0; i < ctx->renderable_count; i++) {
-            poc_renderable *renderable = ctx->renderables[i];
-            if (!renderable || renderable->vertex_buffer == VK_NULL_HANDLE || renderable->index_buffer == VK_NULL_HANDLE) {
-                printf("Skipping renderable %u: invalid geometry\n", i);
-                continue; // Skip renderables without valid geometry
-            }
 
-            // Removed debug output for performance
+        for (uint32_t i = 0; i < render_count; i++) {
+            poc_renderable *renderable = render_list[i];
+            if (!renderable || renderable->vertex_buffer == VK_NULL_HANDLE || renderable->index_buffer == VK_NULL_HANDLE) {
+                continue;
+            }
 
             // Update uniform buffer for this renderable
             update_renderable_uniform_buffer(renderable);
@@ -2518,6 +2574,17 @@ poc_result vulkan_context_begin_frame(poc_context *ctx) {
             // Draw this renderable
             vkCmdDrawIndexed(ctx->command_buffers[image_index], renderable->index_count, 1, 0, 0, 0);
         }
+    }
+
+    // Clean up temporary scene renderables
+    if (is_scene_temporary) {
+        for (uint32_t i = 0; i < render_count; i++) {
+            if (is_scene_temporary[i]) {
+                poc_context_destroy_renderable(ctx, render_list[i]);
+            }
+        }
+        free(render_list);
+        free(is_scene_temporary);
     }
     // DEPRECATED: Removed fallback rendering code that used shared uniform buffers
     // All rendering now uses the per-renderable system
@@ -3072,11 +3139,214 @@ poc_result poc_renderable_load_model(poc_renderable *renderable, const char *obj
     return POC_RESULT_SUCCESS;
 }
 
+poc_result poc_renderable_load_mesh(poc_renderable *renderable, poc_mesh *mesh) {
+    if (!renderable || !mesh) {
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    printf("Loading mesh into renderable '%s'\n", renderable->name);
+
+    // Validate mesh
+    if (!poc_mesh_is_valid(mesh)) {
+        printf("Invalid mesh provided to poc_renderable_load_mesh\n");
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    // Create GPU buffers for the renderable
+    poc_result result = create_renderable_buffers(renderable, mesh->vertices, mesh->vertex_count,
+                                                  mesh->indices, mesh->index_count);
+    if (result != POC_RESULT_SUCCESS) {
+        return result;
+    }
+
+    // Copy material if available from mesh
+    if (mesh->has_material) {
+        renderable->material = mesh->material;
+        renderable->has_material = true;
+        printf("✓ Material loaded: %s\n", renderable->material.name);
+    } else {
+        // Use default material
+        renderable->has_material = false;
+        printf("Using default material for mesh renderable\n");
+    }
+
+    printf("✓ Mesh loaded into renderable '%s': %u vertices, %u indices\n",
+           renderable->name, renderable->vertex_count, renderable->index_count);
+
+    return POC_RESULT_SUCCESS;
+}
+
 void poc_renderable_set_transform(poc_renderable *renderable, mat4 transform) {
     if (!renderable) {
         return;
     }
     glm_mat4_copy(transform, renderable->model_matrix);
+}
+
+// Helper function to create a renderable from a scene object
+static poc_renderable* create_renderable_from_scene_object(poc_context *ctx, poc_scene_object *obj) {
+    if (!ctx || !obj || !poc_scene_object_is_renderable(obj)) {
+        return NULL;
+    }
+
+    // Create a temporary renderable name
+    char name_buffer[256];
+    snprintf(name_buffer, sizeof(name_buffer), "scene_obj_%u", obj->id);
+
+    poc_renderable *renderable = poc_context_create_renderable(ctx, name_buffer);
+    if (!renderable) {
+        printf("Failed to create renderable for scene object %u\n", obj->id);
+        return NULL;
+    }
+
+    // Convert mesh data to Vulkan vertex format and set vertex data
+    poc_mesh *mesh = obj->mesh;
+    if (!mesh || !poc_mesh_is_valid(mesh)) {
+        printf("Scene object %u has invalid mesh\n", obj->id);
+        poc_context_destroy_renderable(ctx, renderable);
+        return NULL;
+    }
+
+    // Set vertex data directly from the mesh
+    poc_result result = create_renderable_buffers(renderable, mesh->vertices, mesh->vertex_count,
+                                                  mesh->indices, mesh->index_count);
+    if (result != POC_RESULT_SUCCESS) {
+        printf("Failed to create vertex data for scene object %u: %s\n", obj->id, poc_result_to_string(result));
+        poc_context_destroy_renderable(ctx, renderable);
+        return NULL;
+    }
+
+    // Set the transform matrix
+    const mat4 *transform = poc_scene_object_get_transform_matrix(obj);
+    if (transform) {
+        mat4 transform_copy;
+        memcpy(transform_copy, *transform, sizeof(mat4));
+        poc_renderable_set_transform(renderable, transform_copy);
+    }
+
+    return renderable;
+}
+
+void vulkan_context_set_scene(poc_context *ctx, poc_scene *scene) {
+    if (!ctx) {
+        return;
+    }
+
+    ctx->active_scene = scene;
+}
+
+poc_result vulkan_context_render_scene(poc_context *ctx, poc_scene *scene) {
+    if (!ctx || !scene) {
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    // Update all scene objects to ensure transforms and bounds are current
+    poc_scene_update(scene);
+
+    // Get renderable objects from the scene
+    uint32_t renderable_count;
+    poc_scene_object **renderable_objects = poc_scene_get_renderable_objects(scene, &renderable_count);
+
+    if (!renderable_objects || renderable_count == 0) {
+        // No objects to render, but not an error
+        return POC_RESULT_SUCCESS;
+    }
+
+    // Collect renderables for rendering
+    poc_renderable **scene_renderables = malloc(sizeof(poc_renderable*) * renderable_count);
+    bool *is_temporary = malloc(sizeof(bool) * renderable_count);
+    if (!scene_renderables || !is_temporary) {
+        free(scene_renderables);
+        free(is_temporary);
+        return POC_RESULT_ERROR_INIT_FAILED;
+    }
+
+    uint32_t valid_renderables = 0;
+    for (uint32_t i = 0; i < renderable_count; i++) {
+        poc_scene_object *obj = renderable_objects[i];
+        poc_renderable *renderable = NULL;
+        bool temp = false;
+
+        // Use scene object's own renderable if it exists and has valid buffers
+        if (obj->renderable && obj->renderable->vertex_buffer != VK_NULL_HANDLE) {
+            renderable = obj->renderable;
+            // Update transform in case it changed
+            const mat4 *transform = poc_scene_object_get_transform_matrix(obj);
+            if (transform) {
+                mat4 transform_copy;
+                memcpy(transform_copy, *transform, sizeof(mat4));
+                poc_renderable_set_transform(renderable, transform_copy);
+            }
+            temp = false;
+        } else {
+            // Fall back to creating temporary renderable
+            renderable = create_renderable_from_scene_object(ctx, obj);
+            temp = true;
+        }
+
+        if (renderable) {
+            scene_renderables[valid_renderables] = renderable;
+            is_temporary[valid_renderables] = temp;
+            valid_renderables++;
+        }
+    }
+
+    if (valid_renderables == 0) {
+        free(scene_renderables);
+        free(is_temporary);
+        return POC_RESULT_SUCCESS;
+    }
+
+    // Temporarily store the current renderables and replace with scene renderables
+    poc_renderable **old_renderables = ctx->renderables;
+    uint32_t old_count = ctx->renderable_count;
+
+    ctx->renderables = scene_renderables;
+    ctx->renderable_count = valid_renderables;
+
+    // The existing rendering code in begin_frame will now render our scene objects
+    // Note: This assumes begin_frame has already been called and we're in a render pass
+
+    // Render each object (this duplicates logic from begin_frame, but allows scene-specific rendering)
+    uint32_t image_index = ctx->current_image_index;
+
+    for (uint32_t i = 0; i < valid_renderables; i++) {
+        poc_renderable *renderable = scene_renderables[i];
+        if (!renderable || renderable->vertex_buffer == VK_NULL_HANDLE || renderable->index_buffer == VK_NULL_HANDLE) {
+            continue;
+        }
+
+        // Update uniform buffer for this renderable
+        update_renderable_uniform_buffer(renderable);
+
+        // Bind descriptor set for this renderable
+        vkCmdBindDescriptorSets(ctx->command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                               ctx->pipeline_layout, 0, 1, &renderable->descriptor_set, 0, NULL);
+
+        // Bind vertex and index buffers for this renderable
+        VkBuffer vertex_buffers[] = {renderable->vertex_buffer};
+        VkDeviceSize offsets[] = {0};
+        vkCmdBindVertexBuffers(ctx->command_buffers[image_index], 0, 1, vertex_buffers, offsets);
+        vkCmdBindIndexBuffer(ctx->command_buffers[image_index], renderable->index_buffer, 0, VK_INDEX_TYPE_UINT32);
+
+        // Draw this renderable
+        vkCmdDrawIndexed(ctx->command_buffers[image_index], renderable->index_count, 1, 0, 0, 0);
+    }
+
+    // Restore original renderables
+    ctx->renderables = old_renderables;
+    ctx->renderable_count = old_count;
+
+    // Clean up only temporary renderables
+    for (uint32_t i = 0; i < valid_renderables; i++) {
+        if (is_temporary[i]) {
+            poc_context_destroy_renderable(ctx, scene_renderables[i]);
+        }
+    }
+    free(scene_renderables);
+    free(is_temporary);
+
+    return POC_RESULT_SUCCESS;
 }
 
 #endif
