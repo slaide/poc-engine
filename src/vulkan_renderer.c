@@ -39,6 +39,7 @@ typedef struct {
 // Declare podi handle getter functions
 bool podi_window_get_x11_handles(podi_window *window, podi_x11_handles *handles);
 bool podi_window_get_wayland_handles(podi_window *window, podi_wayland_handles *handles);
+void podi_window_set_fullscreen_exclusive(podi_window *window, bool enabled);
 
 // Forward declarations for depth resource management
 static void cleanup_depth_resources(poc_context *ctx);
@@ -1092,6 +1093,11 @@ static poc_result create_swapchain_internal(poc_context *ctx, VkSwapchainKHR old
     ctx->swapchain_colorspace = surface_format.colorSpace;
     ctx->swapchain_extent = extent;
 
+    if (ctx->camera && extent.width > 0 && extent.height > 0) {
+        float aspect_ratio = (float)extent.width / (float)extent.height;
+        poc_camera_set_aspect_ratio(ctx->camera, aspect_ratio);
+    }
+
     // Get swapchain images
     vkGetSwapchainImagesKHR(g_vk_state.device, ctx->swapchain, &ctx->swapchain_image_count, NULL);
     ctx->swapchain_images = malloc(ctx->swapchain_image_count * sizeof(VkImage));
@@ -2056,6 +2062,10 @@ void vulkan_context_destroy(poc_context *ctx) {
         return;
     }
 
+    if (ctx->window) {
+        podi_window_set_fullscreen_exclusive(ctx->window, false);
+    }
+
     printf("=== Destroying Vulkan Context ===\n");
 
     // Wait for device to be idle before cleanup
@@ -2206,6 +2216,12 @@ void vulkan_context_set_camera(poc_context *ctx, poc_camera *camera) {
         return;
     }
     ctx->camera = camera;
+
+    if (camera && ctx->swapchain_extent.height > 0) {
+        float aspect_ratio = (float)ctx->swapchain_extent.width / (float)ctx->swapchain_extent.height;
+        poc_camera_set_aspect_ratio(camera, aspect_ratio);
+    }
+
     printf("✓ Camera set on Vulkan context\n");
 }
 
@@ -2306,7 +2322,14 @@ static void update_renderable_uniform_buffer(poc_renderable *renderable) {
 #ifdef POC_PLATFORM_LINUX
 // Helper function to check if window needs client-side decorations (Linux Wayland only)
 static bool needs_client_decorations(podi_window *window) {
-    (void)window;  // Unused for now
+    if (!window) {
+        return false;
+    }
+
+    if (podi_window_is_fullscreen_exclusive(window)) {
+        return false;
+    }
+
     // On Linux, check if we're running on Wayland without server decorations
     if (podi_get_backend() == PODI_BACKEND_WAYLAND) {
         // For now, always assume we need client decorations on Wayland
@@ -3363,6 +3386,14 @@ poc_result vulkan_context_render_scene(poc_context *ctx, poc_scene *scene) {
 void vulkan_context_set_play_mode(poc_context *ctx, bool enabled) {
     if (!ctx) {
         return;
+    }
+
+    if (ctx->play_mode == enabled) {
+        return;
+    }
+
+    if (ctx->window) {
+        podi_window_set_fullscreen_exclusive(ctx->window, enabled);
     }
 
     ctx->play_mode = enabled;
