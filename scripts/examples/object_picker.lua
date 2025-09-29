@@ -49,6 +49,7 @@ function ObjectPicker.new()
     -- Bind scene and camera
     POC.bind_scene(self.scene)
     POC.bind_camera(self.camera)
+    POC.camera_set_horizontal_fov(90.0)
 
     self.fps_mode_enabled = false
     self:set_fps_mode(false, true)

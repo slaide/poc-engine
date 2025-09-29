@@ -30,6 +30,14 @@ typedef enum {
 } poc_camera_type;
 
 /**
+ * @brief Tracks which FOV component is authoritative for resizing
+ */
+typedef enum {
+    POC_CAMERA_FOV_VERTICAL = 0,
+    POC_CAMERA_FOV_HORIZONTAL = 1
+} poc_camera_fov_mode;
+
+/**
  * @brief 3D camera structure
  *
  * Represents a 3D camera with position, orientation, and projection parameters.
@@ -57,6 +65,8 @@ typedef struct {
     float aspect_ratio;      /**< Aspect ratio (width/height) */
     float near_plane;        /**< Near clipping plane distance */
     float far_plane;         /**< Far clipping plane distance */
+    float horizontal_fov;    /**< Horizontal field of view in degrees */
+    poc_camera_fov_mode fov_mode; /**< Which FOV axis was last authored */
 
     // Camera-specific parameters
     union {
@@ -199,6 +209,26 @@ void poc_camera_set_rotation(poc_camera *camera, float yaw, float pitch, float r
  * @param fov Field of view in degrees (typically 45-90)
  */
 void poc_camera_set_fov(poc_camera *camera, float fov);
+
+/**
+ * @brief Set camera vertical field of view (degrees)
+ */
+void poc_camera_set_vertical_fov(poc_camera *camera, float fov);
+
+/**
+ * @brief Set camera horizontal field of view (degrees)
+ */
+void poc_camera_set_horizontal_fov(poc_camera *camera, float fov);
+
+/**
+ * @brief Get the vertical field of view (degrees)
+ */
+float poc_camera_get_vertical_fov(const poc_camera *camera);
+
+/**
+ * @brief Get the horizontal field of view (degrees)
+ */
+float poc_camera_get_horizontal_fov(const poc_camera *camera);
 
 /**
  * @brief Set camera aspect ratio

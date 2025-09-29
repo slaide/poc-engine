@@ -17,6 +17,46 @@ void poc_camera_update_vectors(poc_camera *camera);
 static void calculate_view_matrix(poc_camera *camera);
 static void calculate_projection_matrix(poc_camera *camera);
 
+static float clamp_vertical_fov(float fov) {
+    if (fov < 1.0f) {
+        return 1.0f;
+    }
+    if (fov > 179.0f) {
+        return 179.0f;
+    }
+    return fov;
+}
+
+static float clamp_horizontal_fov(float fov) {
+    if (fov < 1.0f) {
+        return 1.0f;
+    }
+    if (fov > 179.0f) {
+        return 179.0f;
+    }
+    return fov;
+}
+
+static float vertical_to_horizontal(float vertical_fov, float aspect_ratio) {
+    if (aspect_ratio <= 0.0f) {
+        return clamp_horizontal_fov(vertical_fov);
+    }
+
+    float vertical_rad = glm_rad(clamp_vertical_fov(vertical_fov));
+    float horiz_rad = 2.0f * atanf(tanf(vertical_rad * 0.5f) * aspect_ratio);
+    return clamp_horizontal_fov(glm_deg(horiz_rad));
+}
+
+static float horizontal_to_vertical(float horizontal_fov, float aspect_ratio) {
+    if (aspect_ratio <= 0.0f) {
+        return clamp_vertical_fov(horizontal_fov);
+    }
+
+    float horizontal_rad = glm_rad(clamp_horizontal_fov(horizontal_fov));
+    float vertical_rad = 2.0f * atanf(tanf(horizontal_rad * 0.5f) / aspect_ratio);
+    return clamp_vertical_fov(glm_deg(vertical_rad));
+}
+
 poc_camera poc_camera_create(poc_camera_type type, float aspect_ratio) {
     poc_camera camera = {0};
 
@@ -32,10 +72,15 @@ poc_camera poc_camera_create(poc_camera_type type, float aspect_ratio) {
     camera.roll = DEFAULT_ROLL;
 
     // Initialize projection parameters
-    camera.fov = DEFAULT_ZOOM;
     camera.aspect_ratio = aspect_ratio;
+    if (camera.aspect_ratio <= 0.0f) {
+        camera.aspect_ratio = 1.0f;
+    }
+    camera.fov = clamp_vertical_fov(DEFAULT_ZOOM);
     camera.near_plane = DEFAULT_NEAR;
     camera.far_plane = DEFAULT_FAR;
+    camera.horizontal_fov = vertical_to_horizontal(camera.fov, camera.aspect_ratio);
+    camera.fov_mode = POC_CAMERA_FOV_VERTICAL;
 
     // Initialize type-specific parameters
     switch (type) {
@@ -140,16 +185,59 @@ void poc_camera_set_rotation(poc_camera *camera, float yaw, float pitch, float r
 }
 
 void poc_camera_set_fov(poc_camera *camera, float fov) {
-    if (!camera) return;
+    poc_camera_set_vertical_fov(camera, fov);
+}
 
-    camera->fov = fov;
+void poc_camera_set_vertical_fov(poc_camera *camera, float fov) {
+    if (!camera) {
+        return;
+    }
+
+    camera->fov = clamp_vertical_fov(fov);
+    camera->horizontal_fov = vertical_to_horizontal(camera->fov, camera->aspect_ratio);
+    camera->fov_mode = POC_CAMERA_FOV_VERTICAL;
     camera->matrices_dirty = true;
+}
+
+void poc_camera_set_horizontal_fov(poc_camera *camera, float fov) {
+    if (!camera) {
+        return;
+    }
+
+    camera->horizontal_fov = clamp_horizontal_fov(fov);
+    camera->fov = horizontal_to_vertical(camera->horizontal_fov, camera->aspect_ratio);
+    camera->fov_mode = POC_CAMERA_FOV_HORIZONTAL;
+    camera->matrices_dirty = true;
+}
+
+float poc_camera_get_vertical_fov(const poc_camera *camera) {
+    if (!camera) {
+        return DEFAULT_ZOOM;
+    }
+    return camera->fov;
+}
+
+float poc_camera_get_horizontal_fov(const poc_camera *camera) {
+    if (!camera) {
+        return vertical_to_horizontal(DEFAULT_ZOOM, 1.0f);
+    }
+    return camera->horizontal_fov;
 }
 
 void poc_camera_set_aspect_ratio(poc_camera *camera, float aspect_ratio) {
     if (!camera) return;
 
     camera->aspect_ratio = aspect_ratio;
+    if (camera->aspect_ratio <= 0.0f) {
+        camera->aspect_ratio = 1.0f;
+    }
+
+    if (camera->fov_mode == POC_CAMERA_FOV_HORIZONTAL) {
+        camera->fov = horizontal_to_vertical(camera->horizontal_fov, camera->aspect_ratio);
+    } else {
+        camera->horizontal_fov = vertical_to_horizontal(camera->fov, camera->aspect_ratio);
+    }
+
     camera->matrices_dirty = true;
 }
 
@@ -315,10 +403,12 @@ void poc_camera_process_mouse_scroll(poc_camera *camera, double scroll_y) {
     switch (camera->type) {
         case POC_CAMERA_FIRST_PERSON:
         case POC_CAMERA_FREE:
-            camera->fov -= (float)scroll_y;
-            if (camera->fov < 1.0f) camera->fov = 1.0f;
-            if (camera->fov > 120.0f) camera->fov = 120.0f;
-            camera->matrices_dirty = true;
+            {
+                float new_fov = camera->fov - (float)scroll_y;
+                if (new_fov < 1.0f) new_fov = 1.0f;
+                if (new_fov > 120.0f) new_fov = 120.0f;
+                poc_camera_set_vertical_fov(camera, new_fov);
+            }
             break;
 
         case POC_CAMERA_ORBIT:

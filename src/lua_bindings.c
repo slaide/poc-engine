@@ -23,6 +23,11 @@ static int lua_poc_get_time(lua_State *L);
 static int lua_poc_sleep(lua_State *L);
 static int lua_poc_create_camera(lua_State *L);
 static int lua_poc_bind_camera(lua_State *L);
+static int lua_poc_camera_set_fov(lua_State *L);
+static int lua_poc_camera_set_vertical_fov(lua_State *L);
+static int lua_poc_camera_set_horizontal_fov(lua_State *L);
+static int lua_poc_camera_get_vertical_fov(lua_State *L);
+static int lua_poc_camera_get_horizontal_fov(lua_State *L);
 static int lua_poc_quit_application(lua_State *L);
 static int lua_poc_set_cursor_mode(lua_State *L);
 static int lua_poc_get_cursor_position(lua_State *L);
@@ -132,6 +137,21 @@ void poc_scripting_register_bindings(lua_State *L) {
 
     lua_pushcfunction(L, lua_poc_bind_camera);
     lua_setfield(L, -2, "bind_camera");
+
+    lua_pushcfunction(L, lua_poc_camera_set_fov);
+    lua_setfield(L, -2, "camera_set_fov");
+
+    lua_pushcfunction(L, lua_poc_camera_set_vertical_fov);
+    lua_setfield(L, -2, "camera_set_vertical_fov");
+
+    lua_pushcfunction(L, lua_poc_camera_set_horizontal_fov);
+    lua_setfield(L, -2, "camera_set_horizontal_fov");
+
+    lua_pushcfunction(L, lua_poc_camera_get_vertical_fov);
+    lua_setfield(L, -2, "camera_get_vertical_fov");
+
+    lua_pushcfunction(L, lua_poc_camera_get_horizontal_fov);
+    lua_setfield(L, -2, "camera_get_horizontal_fov");
 
     // Application control
     lua_pushcfunction(L, lua_poc_quit_application);
@@ -305,6 +325,46 @@ static int lua_poc_bind_camera(lua_State *L) {
     return 0;
 }
 
+static void ensure_active_camera(lua_State *L) {
+    if (!g_active_camera) {
+        lua_pushstring(L, "No active camera bound");
+        lua_error(L);
+    }
+}
+
+static int lua_poc_camera_set_fov(lua_State *L) {
+    ensure_active_camera(L);
+    float fov = (float)luaL_checknumber(L, 1);
+    poc_camera_set_vertical_fov(g_active_camera, fov);
+    return 0;
+}
+
+static int lua_poc_camera_set_vertical_fov(lua_State *L) {
+    ensure_active_camera(L);
+    float fov = (float)luaL_checknumber(L, 1);
+    poc_camera_set_vertical_fov(g_active_camera, fov);
+    return 0;
+}
+
+static int lua_poc_camera_set_horizontal_fov(lua_State *L) {
+    ensure_active_camera(L);
+    float fov = (float)luaL_checknumber(L, 1);
+    poc_camera_set_horizontal_fov(g_active_camera, fov);
+    return 0;
+}
+
+static int lua_poc_camera_get_vertical_fov(lua_State *L) {
+    ensure_active_camera(L);
+    lua_pushnumber(L, poc_camera_get_vertical_fov(g_active_camera));
+    return 1;
+}
+
+static int lua_poc_camera_get_horizontal_fov(lua_State *L) {
+    ensure_active_camera(L);
+    lua_pushnumber(L, poc_camera_get_horizontal_fov(g_active_camera));
+    return 1;
+}
+
 static int lua_poc_quit_application(lua_State *L) {
     if (!g_active_window) {
         lua_pushstring(L, "No active window set - cannot quit application");
@@ -377,8 +437,15 @@ static int lua_camera_index(lua_State *L) {
     } else if (strcmp(key, "roll") == 0) {
         lua_pushnumber(L, camera->roll);
         return 1;
-    } else if (strcmp(key, "fov") == 0) {
-        lua_pushnumber(L, camera->fov);
+    } else if (strcmp(key, "fov") == 0 || strcmp(key, "vertical_fov") == 0) {
+        lua_pushnumber(L, poc_camera_get_vertical_fov(camera));
+        return 1;
+    } else if (strcmp(key, "horizontal_fov") == 0) {
+        lua_pushnumber(L, poc_camera_get_horizontal_fov(camera));
+        return 1;
+    } else if (strcmp(key, "fov_mode") == 0) {
+        const char *mode = camera->fov_mode == POC_CAMERA_FOV_HORIZONTAL ? "horizontal" : "vertical";
+        lua_pushstring(L, mode);
         return 1;
     } else if (strcmp(key, "type") == 0) {
         lua_pushinteger(L, camera->type);
@@ -410,9 +477,14 @@ static int lua_camera_newindex(lua_State *L) {
         camera->roll = (float)luaL_checknumber(L, 3);
         poc_camera_update_vectors(camera);
         camera->matrices_dirty = true;
-    } else if (strcmp(key, "fov") == 0) {
-        camera->fov = (float)luaL_checknumber(L, 3);
-        camera->matrices_dirty = true;
+    } else if (strcmp(key, "fov") == 0 || strcmp(key, "vertical_fov") == 0) {
+        float value = (float)luaL_checknumber(L, 3);
+        poc_camera_set_vertical_fov(camera, value);
+    } else if (strcmp(key, "horizontal_fov") == 0) {
+        float value = (float)luaL_checknumber(L, 3);
+        poc_camera_set_horizontal_fov(camera, value);
+    } else if (strcmp(key, "fov_mode") == 0) {
+        luaL_error(L, "camera.fov_mode is read-only");
     } else {
         luaL_error(L, "Cannot set property '%s' on camera", key);
     }

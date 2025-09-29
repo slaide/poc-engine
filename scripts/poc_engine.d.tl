@@ -81,12 +81,16 @@ global POC: {
   camera_set_position: function(position: Vec3),
   camera_set_rotation: function(yaw: number, pitch: number, roll: number),
   camera_set_fov: function(fov: number),
+  camera_set_vertical_fov: function(fov: number),
+  camera_set_horizontal_fov: function(fov: number),
 
   -- Camera query functions
   camera_get_position: function(): Vec3,
   camera_get_rotation: function(): number, number, number,  -- yaw, pitch, roll
   camera_get_view_matrix: function(): Mat4,
   camera_get_projection_matrix: function(): Mat4,
+  camera_get_vertical_fov: function(): number,
+  camera_get_horizontal_fov: function(): number,
 
   -- Camera input processing
   camera_process_keyboard: function(key: integer, action: integer, delta_time: number),
