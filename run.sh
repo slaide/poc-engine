@@ -6,6 +6,11 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+cd deps/podi
+make -Bj
+cd "$SCRIPT_DIR"
+make -Bj
+
 # Build if needed
 if [ ! -f "examples/basic" ]; then
     echo "Building POC Engine..."
