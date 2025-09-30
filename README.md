@@ -4,12 +4,13 @@ POC Engine is a graphics framework that renders to windows provided by the [Podi
 
 ## Features
 
-- **Cross-platform graphics rendering**:
-  - Vulkan on Linux
+- **Cross-platform graphics backend**
+  - Vulkan on Linux (current)
   - Metal on macOS (planned)
+- **Scene graph & serialization** with play/edit runtime cloning
+- **Integrated editor pipeline** (edit shading, editor FPS fly mode, play/runtime mode)
 - **Window management via Podi**
-- **C23 implementation**
-- **Git submodule dependency management** (cglm math library, Podi windowing)
+- **C23 implementation** with git-managed dependencies (cglm, Podi, Lua)
 
 ## Building
 
@@ -147,6 +148,18 @@ make run
 LD_LIBRARY_PATH=deps/podi/lib:$LD_LIBRARY_PATH ./examples/basic
 ```
 
+### Editor & Runtime Controls
+
+The shipped example (`examples/basic`) starts in **edit mode** with flat shading and cursor interactions.
+
+- `Space`: toggle **editor FPS mode** (cursor lock + WASD/QE fly camera, stays in edit mode).
+- `F`: toggle **play mode** (runtime clone with lit shading, fullscreen, scene state auto-restored on exit).
+- `Escape`: quit.
+- Mouse click selection is enabled only when neither FPS nor play mode is active.
+- Camera while locked: `WASD` strafing, `Q/E` vertical, mouse look, scroll to adjust FOV.
+
+Exiting play mode restores the edit scene from the cached snapshot (including camera transform) and returns the window to its pre-play size.
+
 ### Compiling Your Application
 
 ```bash
@@ -185,6 +198,18 @@ typedef struct {
     uint32_t app_version;            // Application version
 } poc_config;
 ```
+
+### Scene & Mode Management
+
+- `bool poc_scene_save_to_file(const poc_scene *scene, const char *path)`
+- `poc_scene* poc_scene_load_from_file(const char *path)`
+- `poc_scene* poc_scene_clone(const poc_scene *scene)`
+- `bool poc_scene_copy_from(poc_scene *dest, const poc_scene *source)`
+- `void poc_context_set_scene(poc_context *ctx, poc_scene *scene)`
+- `poc_scene* poc_context_get_active_scene(poc_context *ctx)`
+- `void poc_context_set_play_mode(poc_context *ctx, bool enabled)` / `bool poc_context_is_play_mode(poc_context *ctx)`
+
+Play mode automatically writes a temporary snapshot (under `/tmp/poc_scene_cache*`), clones it for runtime mutation, and restores the saved state on exit. Editor FPS mode (Space) is handled entirely in Lua and keeps the engine in edit shading.
 
 ## Project Structure
 

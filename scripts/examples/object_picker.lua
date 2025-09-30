@@ -52,6 +52,7 @@ function ObjectPicker.new()
     POC.camera_set_horizontal_fov(90.0)
 
     self.fps_mode_enabled = false
+    self.editor_fps_mode_enabled = false
     self:set_fps_mode(false, true)
     print("✓ Object Picker initialized")
     print("Edit mode active: click objects to select (unlit shading)")
@@ -114,7 +115,7 @@ end
 
 function ObjectPicker:process_mouse_button(button, pressed, x, y, width, height)
     -- Handle left mouse button clicks for picking (only when FPS mode not active)
-    if self.fps_mode_enabled then
+    if self.fps_mode_enabled or self.editor_fps_mode_enabled then
         return
     end
 
@@ -161,6 +162,9 @@ function ObjectPicker:process_keyboard(key, pressed)
 
     if key == KEY.F and pressed and not was_pressed then
         self:set_fps_mode(not self.fps_mode_enabled, false)
+    elseif key == KEY.SPACE and pressed and not was_pressed then
+        -- Toggle editor FPS mode (stays in edit mode, no shading change)
+        self:set_editor_fps_mode(not self.editor_fps_mode_enabled)
     end
 
     -- Track key states for continuous movement
@@ -168,7 +172,7 @@ function ObjectPicker:process_keyboard(key, pressed)
 end
 
 function ObjectPicker:process_mouse_movement(x, y, delta_x, delta_y)
-    if not self.fps_mode_enabled then
+    if not (self.fps_mode_enabled or self.editor_fps_mode_enabled) then
         self.last_mouse_x = x
         self.last_mouse_y = y
         self.first_mouse = true
@@ -224,8 +228,14 @@ function ObjectPicker:process_mouse_scroll(scroll_y)
     end
 end
 
+local function mode_cursor_lock(self)
+    local locked = self.fps_mode_enabled or self.editor_fps_mode_enabled
+    POC.set_cursor_mode(locked, not locked)
+    self.first_mouse = true
+end
+
 function ObjectPicker:update(delta_time)
-    if not self.fps_mode_enabled then
+    if not (self.fps_mode_enabled or self.editor_fps_mode_enabled) then
         return
     end
 
@@ -289,9 +299,12 @@ function ObjectPicker:set_fps_mode(enabled, force)
         return
     end
 
+    if enabled and self.editor_fps_mode_enabled then
+        self:set_editor_fps_mode(false)
+    end
+
     self.fps_mode_enabled = enabled
-    POC.set_cursor_mode(enabled, not enabled)
-    self.first_mouse = true
+    mode_cursor_lock(self)
 
     POC.set_play_mode(enabled)
 
@@ -307,6 +320,9 @@ function ObjectPicker:on_window_focus(focused)
         if self.fps_mode_enabled then
             self:set_fps_mode(false, true)
         end
+        if self.editor_fps_mode_enabled then
+            self:set_editor_fps_mode(false)
+        end
         self.keys_pressed = {}
     else
         self.first_mouse = true
@@ -317,6 +333,25 @@ function ObjectPicker:on_mouse_enter(x, y)
     self.last_mouse_x = x
     self.last_mouse_y = y
     self.first_mouse = true
+end
+
+function ObjectPicker:set_editor_fps_mode(enabled)
+    if self.editor_fps_mode_enabled == enabled then
+        return
+    end
+
+    if self.fps_mode_enabled and enabled then
+        self:set_fps_mode(false, true)
+    end
+
+    self.editor_fps_mode_enabled = enabled
+    mode_cursor_lock(self)
+
+    if enabled then
+        print("Editor FPS mode enabled: cursor locked, stay in edit shading")
+    else
+        print("Editor FPS mode disabled: cursor visible, object selection re-enabled")
+    end
 end
 
 -- Create global instance

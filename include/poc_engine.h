@@ -44,6 +44,11 @@
 #include <cglm/cglm.h>
 #include <podi.h>
 
+/**
+ * @brief Maximum length for asset paths stored by the engine.
+ */
+#define POC_ASSET_PATH_MAX 260
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -506,6 +511,46 @@ bool poc_scene_pick_object(poc_scene *scene,
                           poc_hit_result *hit_result);
 
 /**
+ * @brief Save a scene to disk using the engine's text-based scene format.
+ *
+ * @param scene Scene to serialize.
+ * @param path  Target file path.
+ * @return true on success, false otherwise.
+ */
+bool poc_scene_save_to_file(const poc_scene *scene, const char *path);
+
+/**
+ * @brief Load a scene from disk.
+ *
+ * The returned scene owns meshes loaded from disk and must be destroyed with
+ * poc_scene_destroy(scene, true) when no longer needed.
+ *
+ * @param path Source file path.
+ * @return Newly allocated scene pointer, or NULL on failure.
+ */
+poc_scene* poc_scene_load_from_file(const char *path);
+
+/**
+ * @brief Create an in-memory clone of an existing scene.
+ *
+ * Meshes and materials are shallow-copied; each cloned object receives its own
+ * renderable instance. Destroy the clone with poc_scene_destroy(clone, true).
+ *
+ * @param scene Scene to clone.
+ * @return Newly allocated clone, or NULL on failure.
+ */
+poc_scene* poc_scene_clone(const poc_scene *scene);
+
+/**
+ * @brief Replace the contents of an existing scene with another scene.
+ *
+ * The destination scene keeps its pointer identity while mirroring all objects
+ * from the source scene. Returns false if allocation fails and leaves the
+ * destination empty.
+ */
+bool poc_scene_copy_from(poc_scene *dest, const poc_scene *source);
+
+/**
  * @brief Set the active scene for a rendering context
  *
  * The active scene's objects will be automatically rendered during
@@ -516,6 +561,16 @@ bool poc_scene_pick_object(poc_scene *scene,
  * @param scene The scene to make active, or NULL to clear the active scene
  */
 void poc_context_set_scene(poc_context *ctx, poc_scene *scene);
+
+/**
+ * @brief Get the scene currently being rendered by the context.
+ */
+poc_scene* poc_context_get_active_scene(poc_context *ctx);
+
+/**
+ * @brief Get the edit-mode scene bound to the context.
+ */
+poc_scene* poc_context_get_edit_scene(poc_context *ctx);
 
 /**
  * @brief Render all objects in a scene using the specified context

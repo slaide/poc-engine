@@ -97,6 +97,12 @@ poc_mesh* poc_mesh_load(const char *filename) {
 
     poc_model_destroy(&model);
 
+    // Store the asset path for serialization/reference purposes
+    if (filename) {
+        strncpy(mesh->source_path, filename, POC_ASSET_PATH_MAX - 1);
+        mesh->source_path[POC_ASSET_PATH_MAX - 1] = '\0';
+    }
+
     return mesh;
 }
 

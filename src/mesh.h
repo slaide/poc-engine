@@ -11,6 +11,7 @@
 #include <cglm/cglm.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include "poc_engine.h"
 #include "obj_loader.h"
 
 #ifdef __cplusplus
@@ -44,6 +45,9 @@ typedef struct poc_mesh {
 
     // Resource management
     bool owns_data;             /**< Whether this mesh owns the vertex/index data */
+
+    // Metadata
+    char source_path[POC_ASSET_PATH_MAX]; /**< Source asset path used to create mesh */
 } poc_mesh;
 
 /**

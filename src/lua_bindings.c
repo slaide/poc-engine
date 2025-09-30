@@ -41,6 +41,10 @@ static int lua_poc_pick_object(lua_State *L);
 static int lua_poc_scene_add_object(lua_State *L);
 static int lua_poc_scene_object_set_mesh(lua_State *L);
 static int lua_poc_scene_object_set_position(lua_State *L);
+static int lua_poc_scene_save(lua_State *L);
+static int lua_poc_scene_load(lua_State *L);
+static int lua_poc_scene_clone(lua_State *L);
+static int lua_poc_scene_copy_from(lua_State *L);
 static int lua_poc_set_play_mode(lua_State *L);
 static int lua_poc_is_play_mode(lua_State *L);
 
@@ -181,6 +185,18 @@ void poc_scripting_register_bindings(lua_State *L) {
 
     lua_pushcfunction(L, lua_poc_scene_object_set_position);
     lua_setfield(L, -2, "scene_object_set_position");
+
+    lua_pushcfunction(L, lua_poc_scene_save);
+    lua_setfield(L, -2, "scene_save");
+
+    lua_pushcfunction(L, lua_poc_scene_load);
+    lua_setfield(L, -2, "scene_load");
+
+    lua_pushcfunction(L, lua_poc_scene_clone);
+    lua_setfield(L, -2, "scene_clone");
+
+    lua_pushcfunction(L, lua_poc_scene_copy_from);
+    lua_setfield(L, -2, "scene_copy_from");
 
     // Cursor control functions
     lua_pushcfunction(L, lua_poc_set_cursor_mode);
@@ -389,6 +405,12 @@ void poc_scripting_set_window(podi_window *window) {
 
 // Get the currently active scene (set by Lua script)
 poc_scene *poc_scripting_get_active_scene(void) {
+    if (g_active_context) {
+        poc_scene *context_scene = poc_context_get_active_scene(g_active_context);
+        if (context_scene) {
+            g_active_scene = context_scene;
+        }
+    }
     return g_active_scene;
 }
 
@@ -654,6 +676,11 @@ static int lua_poc_bind_scene(lua_State *L) {
 
     g_active_scene = *scene_ptr;
     printf("✓ Scene bound for picking\n");
+
+    if (g_active_context) {
+        poc_context_set_scene(g_active_context, g_active_scene);
+        printf("[playmode] Context scene updated from Lua bind\n");
+    }
     return 0;
 }
 
@@ -821,6 +848,83 @@ static int lua_poc_scene_object_set_position(lua_State *L) {
     return 0;
 }
 
+static int lua_poc_scene_save(lua_State *L) {
+    poc_scene **scene_ptr = (poc_scene **)luaL_checkudata(L, 1, SCENE_METATABLE);
+    const char *path = luaL_checkstring(L, 2);
+
+    if (!scene_ptr || !*scene_ptr) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Invalid scene object");
+        return 2;
+    }
+
+    if (!poc_scene_save_to_file(*scene_ptr, path)) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "Failed to save scene to '%s'", path);
+        return 2;
+    }
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_poc_scene_load(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+
+    poc_scene *scene = poc_scene_load_from_file(path);
+    if (!scene) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "Failed to load scene from '%s'", path);
+        return 2;
+    }
+
+    poc_scene **userdata = (poc_scene **)lua_newuserdata(L, sizeof(poc_scene *));
+    *userdata = scene;
+    luaL_setmetatable(L, SCENE_METATABLE);
+    return 1;
+}
+
+static int lua_poc_scene_clone(lua_State *L) {
+    poc_scene **scene_ptr = (poc_scene **)luaL_checkudata(L, 1, SCENE_METATABLE);
+    if (!scene_ptr || !*scene_ptr) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Invalid scene object");
+        return 2;
+    }
+
+    poc_scene *clone = poc_scene_clone(*scene_ptr);
+    if (!clone) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Failed to clone scene");
+        return 2;
+    }
+
+    poc_scene **userdata = (poc_scene **)lua_newuserdata(L, sizeof(poc_scene *));
+    *userdata = clone;
+    luaL_setmetatable(L, SCENE_METATABLE);
+    return 1;
+}
+
+static int lua_poc_scene_copy_from(lua_State *L) {
+    poc_scene **dest_ptr = (poc_scene **)luaL_checkudata(L, 1, SCENE_METATABLE);
+    poc_scene **src_ptr = (poc_scene **)luaL_checkudata(L, 2, SCENE_METATABLE);
+
+    if (!dest_ptr || !*dest_ptr || !src_ptr || !*src_ptr) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Invalid scene arguments");
+        return 2;
+    }
+
+    if (!poc_scene_copy_from(*dest_ptr, *src_ptr)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Failed to copy scene contents");
+        return 2;
+    }
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 static int lua_poc_set_play_mode(lua_State *L) {
     bool enabled = lua_toboolean(L, 1);
 
@@ -830,7 +934,9 @@ static int lua_poc_set_play_mode(lua_State *L) {
         return 0;
     }
 
+    printf("[playmode] lua set_play_mode -> %s\n", enabled ? "true" : "false");
     poc_context_set_play_mode(g_active_context, enabled);
+    g_active_scene = poc_context_get_active_scene(g_active_context);
     return 0;
 }
 
@@ -855,6 +961,8 @@ static int lua_poc_set_cursor_mode(lua_State *L) {
         return 0;
     }
 
+    printf("[playmode] lua set_cursor_mode: locked=%s visible=%s\n",
+           locked ? "true" : "false", visible ? "true" : "false");
     podi_window_set_cursor_mode(g_active_window, locked, visible);
     return 0;
 }

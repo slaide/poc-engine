@@ -166,6 +166,8 @@ void vulkan_context_set_camera(poc_context *ctx, poc_camera *camera);
  * @note This is an internal function - use poc_context_set_scene() instead.
  */
 void vulkan_context_set_scene(poc_context *ctx, poc_scene *scene);
+poc_scene* vulkan_context_get_active_scene(poc_context *ctx);
+poc_scene* vulkan_context_get_edit_scene(poc_context *ctx);
 
 /**
  * @brief Render all objects in a scene using Vulkan

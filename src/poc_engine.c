@@ -280,6 +280,46 @@ void poc_context_set_scene(poc_context *ctx, poc_scene *scene) {
 #endif
 }
 
+poc_scene* poc_context_get_active_scene(poc_context *ctx) {
+    if (!ctx) {
+        return NULL;
+    }
+
+#ifdef POC_PLATFORM_LINUX
+    if (g_current_renderer == POC_RENDERER_VULKAN) {
+        return vulkan_context_get_active_scene(ctx);
+    }
+#endif
+
+#ifdef POC_PLATFORM_MACOS
+    if (g_current_renderer == POC_RENDERER_METAL) {
+        return metal_context_get_active_scene(ctx);
+    }
+#endif
+
+    return NULL;
+}
+
+poc_scene* poc_context_get_edit_scene(poc_context *ctx) {
+    if (!ctx) {
+        return NULL;
+    }
+
+#ifdef POC_PLATFORM_LINUX
+    if (g_current_renderer == POC_RENDERER_VULKAN) {
+        return vulkan_context_get_edit_scene(ctx);
+    }
+#endif
+
+#ifdef POC_PLATFORM_MACOS
+    if (g_current_renderer == POC_RENDERER_METAL) {
+        return metal_context_get_edit_scene(ctx);
+    }
+#endif
+
+    return NULL;
+}
+
 poc_result poc_context_render_scene(poc_context *ctx, poc_scene *scene) {
     if (!ctx || !scene) {
         return POC_RESULT_ERROR_INIT_FAILED;

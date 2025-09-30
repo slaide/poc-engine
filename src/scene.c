@@ -29,6 +29,16 @@ void poc_scene_destroy(poc_scene *scene, bool destroy_objects) {
         }
     }
 
+    if (scene->mesh_assets) {
+        for (uint32_t i = 0; i < scene->mesh_asset_count; i++) {
+            poc_scene_mesh_entry *entry = &scene->mesh_assets[i];
+            if (entry->owned && entry->mesh) {
+                poc_mesh_destroy(entry->mesh);
+            }
+        }
+        free(scene->mesh_assets);
+    }
+
     free(scene->objects);
     free(scene);
 }

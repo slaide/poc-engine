@@ -17,6 +17,9 @@
 
 ---@alias Vec3 {x: number, y: number, z: number}
 ---@alias Mat4 {number}  -- Array of 16 numbers
+---@alias Scene userdata
+---@alias SceneObject userdata
+---@alias Mesh userdata
 
 -- Enums
 
@@ -98,7 +101,20 @@ global POC: {
   camera_process_mouse_scroll: function(scroll_y: number),
 
   -- Camera update
-  camera_update: function(delta_time: number)
+  camera_update: function(delta_time: number),
+
+  -- Scene management
+  create_scene: function(): Scene | nil,
+  bind_scene: function(scene: Scene),
+  create_scene_object: function(name: string, id: integer): SceneObject | nil,
+  load_mesh: function(path: string): Mesh | nil,
+  scene_add_object: function(scene: Scene, object: SceneObject): boolean,
+  scene_object_set_mesh: function(object: SceneObject, mesh: Mesh),
+  scene_object_set_position: function(object: SceneObject, x: number, y: number, z: number),
+  scene_save: function(scene: Scene, path: string): boolean,
+  scene_load: function(path: string): Scene | nil,
+  scene_clone: function(scene: Scene): Scene | nil,
+  scene_copy_from: function(dest: Scene, source: Scene): boolean
 }
 
 -- Helper functions for creating Vec3 objects

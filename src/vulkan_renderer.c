@@ -1,5 +1,7 @@
 #ifdef POC_PLATFORM_LINUX
 
+#define _POSIX_C_SOURCE 200809L
+
 #include "vulkan_renderer.h"
 #include "poc_engine.h"
 #include "obj_loader.h"
@@ -13,8 +15,14 @@
 #include <string.h>
 #include <stddef.h>
 #include <math.h>
+#include <errno.h>
+#include <unistd.h>
 #include <cglm/cglm.h>
 #include "../deps/podi/src/internal.h"
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 // Forward declare X11 types to avoid including X11 headers
 typedef struct _Display Display;
@@ -195,9 +203,18 @@ struct poc_context {
 
     // Scene system
     poc_scene *active_scene;
+    poc_scene *edit_scene;
+    poc_scene *runtime_scene;
 
     // Play/Edit mode state
     bool play_mode;
+    bool play_scene_cache_valid;
+    char play_scene_cache_path[PATH_MAX];
+    bool has_camera_backup;
+    poc_camera camera_backup;
+    bool has_window_backup;
+    int window_backup_width;
+    int window_backup_height;
 
     // Depth buffer
     VkImage depth_image;
@@ -222,6 +239,22 @@ static const char *get_format_string(VkFormat format) {
         case VK_FORMAT_R16G16B16A16_SFLOAT: return "VK_FORMAT_R16G16B16A16_SFLOAT";
         default: return "UNKNOWN_FORMAT";
     }
+}
+
+poc_scene* vulkan_context_get_active_scene(poc_context *ctx) {
+    if (!ctx) {
+        return NULL;
+    }
+    printf("[playmode] Query active scene -> %p\n", (void*)ctx->active_scene);
+    return ctx->active_scene;
+}
+
+poc_scene* vulkan_context_get_edit_scene(poc_context *ctx) {
+    if (!ctx) {
+        return NULL;
+    }
+    printf("[playmode] Query edit scene -> %p\n", (void*)ctx->edit_scene);
+    return ctx->edit_scene;
 }
 
 static const char *get_present_mode_string(VkPresentModeKHR present_mode) {
@@ -1960,6 +1993,16 @@ poc_context *vulkan_context_create(podi_window *window) {
         return NULL;
     }
     ctx->renderable_count = 0;
+    ctx->play_mode = false;
+    ctx->runtime_scene = NULL;
+    ctx->edit_scene = NULL;
+    ctx->active_scene = NULL;
+    ctx->play_scene_cache_valid = false;
+    ctx->play_scene_cache_path[0] = '\0';
+    ctx->has_camera_backup = false;
+    ctx->has_window_backup = false;
+    ctx->window_backup_width = 0;
+    ctx->window_backup_height = 0;
 
     // Initialize resize tracking using surface size (for swapchain)
     int initial_width, initial_height;
@@ -2067,6 +2110,16 @@ void vulkan_context_destroy(poc_context *ctx) {
     }
 
     printf("=== Destroying Vulkan Context ===\n");
+
+    if (ctx->runtime_scene) {
+        poc_scene_destroy(ctx->runtime_scene, true);
+        ctx->runtime_scene = NULL;
+    }
+
+    if (ctx->play_scene_cache_valid) {
+        unlink(ctx->play_scene_cache_path);
+        ctx->play_scene_cache_valid = false;
+    }
 
     // Wait for device to be idle before cleanup
     if (g_vk_state.device != VK_NULL_HANDLE) {
@@ -3266,7 +3319,15 @@ void vulkan_context_set_scene(poc_context *ctx, poc_scene *scene) {
         return;
     }
 
+    if (ctx->play_mode) {
+        // Leave play mode to ensure we restore from the cached copy before swapping scenes
+        vulkan_context_set_play_mode(ctx, false);
+    }
+
+    ctx->edit_scene = scene;
     ctx->active_scene = scene;
+    printf("[playmode] Context scene set: edit=%p active=%p\n",
+           (void*)ctx->edit_scene, (void*)ctx->active_scene);
 }
 
 poc_result vulkan_context_render_scene(poc_context *ctx, poc_scene *scene) {
@@ -3383,20 +3444,171 @@ poc_result vulkan_context_render_scene(poc_context *ctx, poc_scene *scene) {
     return POC_RESULT_SUCCESS;
 }
 
+static bool create_scene_cache(poc_context *ctx) {
+    if (!ctx || !ctx->edit_scene) {
+        printf("[playmode] create_scene_cache: missing context or edit scene\n");
+        return false;
+    }
+
+    char template_path[] = "/tmp/poc_scene_cacheXXXXXX";
+    int fd = mkstemp(template_path);
+    if (fd == -1) {
+        printf("Failed to create temporary scene cache: %s\n", strerror(errno));
+        return false;
+    }
+    close(fd);
+
+    if (!poc_scene_save_to_file(ctx->edit_scene, template_path)) {
+        printf("Failed to write scene cache to '%s'\n", template_path);
+        unlink(template_path);
+        return false;
+    }
+
+    strncpy(ctx->play_scene_cache_path, template_path, sizeof(ctx->play_scene_cache_path) - 1);
+    ctx->play_scene_cache_path[sizeof(ctx->play_scene_cache_path) - 1] = '\0';
+    ctx->play_scene_cache_valid = true;
+    printf("[playmode] Scene cache created at '%s'\n", ctx->play_scene_cache_path);
+    return true;
+}
+
 void vulkan_context_set_play_mode(poc_context *ctx, bool enabled) {
     if (!ctx) {
         return;
     }
 
     if (ctx->play_mode == enabled) {
+        printf("[playmode] Request to set play mode to %s ignored (already in that state)\n",
+               enabled ? "ON" : "OFF");
         return;
     }
 
-    if (ctx->window) {
-        podi_window_set_fullscreen_exclusive(ctx->window, enabled);
-    }
+    if (enabled) {
+        if (!ctx->edit_scene) {
+            printf("Play mode requested without an edit scene bound\n");
+            return;
+        }
 
-    ctx->play_mode = enabled;
+        if (ctx->window && !ctx->has_window_backup) {
+            podi_window_get_size(ctx->window,
+                                 &ctx->window_backup_width,
+                                 &ctx->window_backup_height);
+            ctx->has_window_backup = true;
+            printf("[playmode] Stored window size backup %dx%d\n",
+                   ctx->window_backup_width, ctx->window_backup_height);
+        }
+
+        if (ctx->window) {
+            podi_window_set_fullscreen_exclusive(ctx->window, true);
+            printf("[playmode] fullscreen_exclusive -> enabled\n");
+        }
+
+        if (ctx->runtime_scene) {
+            poc_scene_destroy(ctx->runtime_scene, true);
+            ctx->runtime_scene = NULL;
+            printf("[playmode] Discarded previous runtime scene\n");
+        }
+
+        if (ctx->play_scene_cache_valid) {
+            unlink(ctx->play_scene_cache_path);
+            ctx->play_scene_cache_valid = false;
+            printf("[playmode] Removed stale scene cache\n");
+        }
+
+        if (!create_scene_cache(ctx)) {
+            if (ctx->window) {
+                podi_window_set_fullscreen_exclusive(ctx->window, false);
+                printf("[playmode] fullscreen_exclusive -> disabled (cache failure)\n");
+            }
+            printf("[playmode] Failed to create scene cache; aborting play mode enter\n");
+            return;
+        }
+
+        ctx->runtime_scene = poc_scene_load_from_file(ctx->play_scene_cache_path);
+        if (!ctx->runtime_scene) {
+            printf("Failed to load runtime scene from cache '%s'\n", ctx->play_scene_cache_path);
+            unlink(ctx->play_scene_cache_path);
+            ctx->play_scene_cache_valid = false;
+            ctx->play_scene_cache_path[0] = '\0';
+            if (ctx->window) {
+                podi_window_set_fullscreen_exclusive(ctx->window, false);
+                printf("[playmode] fullscreen_exclusive -> disabled (load failure)\n");
+            }
+            return;
+        }
+
+        if (ctx->camera) {
+            ctx->camera_backup = *ctx->camera;
+            ctx->has_camera_backup = true;
+            printf("[playmode] Camera backup captured (pos %.2f %.2f %.2f)\n",
+                   ctx->camera->position[0], ctx->camera->position[1], ctx->camera->position[2]);
+        } else {
+            ctx->has_camera_backup = false;
+            printf("[playmode] No active camera to back up\n");
+        }
+
+        ctx->active_scene = ctx->runtime_scene;
+        ctx->play_mode = true;
+        printf("[playmode] Entered play mode with runtime scene from cache\n");
+    } else {
+        if (ctx->window) {
+            podi_window_set_fullscreen_exclusive(ctx->window, false);
+            printf("[playmode] fullscreen_exclusive -> disabled\n");
+        }
+
+        if (ctx->runtime_scene) {
+            poc_scene_destroy(ctx->runtime_scene, true);
+            ctx->runtime_scene = NULL;
+            printf("[playmode] Destroyed runtime scene on exit\n");
+        }
+
+        if (ctx->play_scene_cache_valid && ctx->edit_scene) {
+            poc_scene *restored = poc_scene_load_from_file(ctx->play_scene_cache_path);
+            if (restored) {
+                if (!poc_scene_copy_from(ctx->edit_scene, restored)) {
+                    printf("Failed to restore edit scene after play mode\n");
+                } else {
+                    printf("[playmode] Restored edit scene from cache\n");
+                }
+
+                for (uint32_t i = 0; i < restored->mesh_asset_count; i++) {
+                    restored->mesh_assets[i].owned = false;
+                }
+
+                poc_scene_destroy(restored, true);
+            } else {
+                printf("Failed to reload scene cache '%s'\n", ctx->play_scene_cache_path);
+            }
+
+            unlink(ctx->play_scene_cache_path);
+            ctx->play_scene_cache_valid = false;
+            ctx->play_scene_cache_path[0] = '\0';
+            printf("[playmode] Cleared scene cache file\n");
+        }
+
+        if (ctx->has_camera_backup && ctx->camera) {
+            printf("[playmode] Restoring camera backup (pos %.2f %.2f %.2f)\n",
+                   ctx->camera_backup.position[0], ctx->camera_backup.position[1], ctx->camera_backup.position[2]);
+            *ctx->camera = ctx->camera_backup;
+            ctx->camera->matrices_dirty = true;
+            poc_camera_update_vectors(ctx->camera);
+            poc_camera_update_matrices(ctx->camera);
+        }
+
+        ctx->active_scene = ctx->edit_scene;
+        ctx->play_mode = false;
+        ctx->has_camera_backup = false;
+
+        if (ctx->window && ctx->has_window_backup) {
+            podi_window_set_size(ctx->window,
+                                 ctx->window_backup_width,
+                                 ctx->window_backup_height);
+            printf("[playmode] Restored window size to %dx%d\n",
+                   ctx->window_backup_width, ctx->window_backup_height);
+            ctx->has_window_backup = false;
+        }
+
+        printf("[playmode] Play mode disabled; edit scene active\n");
+    }
 }
 
 bool vulkan_context_is_play_mode(const poc_context *ctx) {

@@ -36,6 +36,16 @@ typedef struct poc_hit_result {
 } poc_hit_result;
 
 /**
+ * @brief Mesh asset entry tracking ownership within a scene
+ */
+typedef struct poc_scene_mesh_entry {
+    char path[POC_ASSET_PATH_MAX]; /**< Asset path used to load the mesh */
+    poc_mesh *mesh;                /**< Mesh resource */
+    uint32_t ref_count;            /**< Number of scene objects referencing the mesh */
+    bool owned;                    /**< Whether the scene owns and should destroy the mesh */
+} poc_scene_mesh_entry;
+
+/**
  * @brief Scene containing a collection of objects
  */
 typedef struct poc_scene {
@@ -43,6 +53,11 @@ typedef struct poc_scene {
     uint32_t object_count;         /**< Number of objects */
     uint32_t object_capacity;      /**< Capacity of objects array */
     uint32_t next_object_id;       /**< Next available object ID */
+
+    // Asset tracking for serialized scenes
+    poc_scene_mesh_entry *mesh_assets; /**< Mesh assets owned by the scene */
+    uint32_t mesh_asset_count;         /**< Number of mesh asset entries */
+    uint32_t mesh_asset_capacity;      /**< Capacity of mesh asset array */
 } poc_scene;
 
 /**
@@ -152,6 +167,11 @@ bool poc_scene_pick_object(poc_scene *scene,
  * @return Array of renderable object pointers (do not free)
  */
 poc_scene_object** poc_scene_get_renderable_objects(poc_scene *scene, uint32_t *out_count);
+
+bool poc_scene_save_to_file(const poc_scene *scene, const char *path);
+poc_scene* poc_scene_load_from_file(const char *path);
+poc_scene* poc_scene_clone(const poc_scene *scene);
+bool poc_scene_copy_from(poc_scene *dest, const poc_scene *source);
 
 #ifdef __cplusplus
 }
